@@ -1,0 +1,8 @@
+node_modules
+data
+dist
+.git
+.claude
+*.db
+*.db-*
+scratch_server.log

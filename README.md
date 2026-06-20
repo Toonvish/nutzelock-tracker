@@ -31,6 +31,30 @@ The server binds `0.0.0.0`, so it's reachable on your LAN. Open <http://localhos
 
 SQLite at `data/nuzlocke.db` (override with `NUZLOCKE_DB`). Schema: `runs` → `routes` → `encounters` (one per slot; soullink uses slots 0 and 1). Deleting a run cascades to its routes and encounters. The DB auto-migrates older single-encounter data into the encounters table on first run.
 
+## Deploy on Render
+
+The server already reads `PORT` from the environment and binds `0.0.0.0`, so it works on Render as-is.
+
+**Commands** (Render dashboard → New → Web Service):
+
+| Field | Value |
+|---|---|
+| Build Command | `bun install` |
+| Start Command | `bun run start` |
+
+Runtime: pick **Bun** if offered; otherwise pick **Node** — the committed `bun.lock` makes Render install Bun automatically. (Render injects `PORT`; no need to set it.)
+
+**Persist the database.** The app stores everything in SQLite at `data/nuzlocke.db`, and Render's filesystem is wiped on every deploy/restart. To keep your runs, add a **Persistent Disk** (requires a paid instance) and point the DB at it:
+
+- Disk mount path: `/var/data`
+- Env var: `NUZLOCKE_DB=/var/data/nuzlocke.db`
+
+On the free plan there's no persistent disk, so data resets on each deploy/sleep.
+
+**One-click blueprint.** `render.yaml` encodes all of the above (web service + disk + env). On Render: **New → Blueprint**, select the repo. Edit `region`/`plan` first if needed.
+
+**Docker (most reliable).** If the native Bun path gives trouble, set the service runtime to **Docker** — the included `Dockerfile` runs on the official `oven/bun` image. Still mount a disk at `/data` (the Dockerfile sets `NUZLOCKE_DB=/data/nuzlocke.db`).
+
 ## Build a single binary
 
 ```sh

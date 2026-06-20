@@ -9,5 +9,8 @@
     "build:pi": "bun build --compile --target=bun-linux-arm64 --minify src/server.ts --outfile dist/nuzlocke-pi",
     "build:linux-x64": "bun build --compile --target=bun-linux-x64 --minify src/server.ts --outfile dist/nuzlocke-linux-x64",
     "build:win": "bun build --compile --target=bun-windows-x64 --minify src/server.ts --outfile dist/nuzlocke-win.exe"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.14"
   }
 }
