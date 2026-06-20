@@ -255,6 +255,73 @@ async function getEvolutions(detail) {
   return opts;
 }
 
+// ---- Dupes clause: warn when an evolution line is already an encounter ----
+const familyCache = new Map(); // pokemonId -> evolution-chain id (family key)
+let dupeInfo = new Map(); // encounterId -> { routeName, slot } of the conflict
+
+/** The evolution-chain id shared by a whole evolution family. */
+async function getFamilyKey(pokemonId) {
+  if (familyCache.has(pokemonId)) return familyCache.get(pokemonId);
+  let key = null;
+  try {
+    const detail = await getPokemonDetail(pokemonId);
+    const species = await api(detail.speciesUrl);
+    const m = species.evolution_chain.url.match(/\/evolution-chain\/(\d+)\/?$/);
+    key = m ? Number(m[1]) : null;
+  } catch {
+    key = null;
+  }
+  familyCache.set(pokemonId, key);
+  return key;
+}
+
+/** Two encounters are dupes if their families match on *different* routes. */
+async function recomputeDupes() {
+  const items = [];
+  for (const route of routes)
+    for (const e of route.encounters)
+      if (e.pokemon_id) items.push({ e, route });
+  await Promise.all(items.map((x) => getFamilyKey(x.e.pokemon_id)));
+
+  const byFamily = new Map();
+  for (const x of items) {
+    const k = familyCache.get(x.e.pokemon_id);
+    if (k == null) continue;
+    if (!byFamily.has(k)) byFamily.set(k, []);
+    byFamily.get(k).push(x);
+  }
+  const next = new Map();
+  for (const members of byFamily.values()) {
+    if (members.length < 2) continue;
+    for (const m of members) {
+      const other = members.find((o) => o.route.id !== m.route.id);
+      if (other) next.set(m.e.id, { routeName: other.route.name, slot: other.e.slot });
+    }
+  }
+  dupeInfo = next;
+  applyDupeBadges();
+}
+
+function playerLabel(run, slot) {
+  return slot === 0 ? run?.player1 || "Player 1" : run?.player2 || "Player 2";
+}
+
+function applyDupeBadges() {
+  const run = runs.find((r) => r.id === activeRunId);
+  for (const box of routesArea.querySelectorAll(".sprite-box[data-enc-id]")) {
+    box.querySelector(".dupe-badge")?.remove();
+    box.classList.remove("has-dupe");
+    const info = dupeInfo.get(Number(box.dataset.encId));
+    if (!info) continue;
+    box.classList.add("has-dupe");
+    const badge = el("span", "dupe-badge");
+    badge.textContent = "⚠";
+    const who = run?.mode === "soullink" ? ` (${playerLabel(run, info.slot)})` : "";
+    badge.title = `Dupe — this evolution line is already an encounter on ${info.routeName}${who}`;
+    box.appendChild(badge);
+  }
+}
+
 // ---- Live sync (WebSocket) ----
 function setSync(on) {
   const d = $("#sync-dot");
@@ -427,6 +494,7 @@ function renderRoutes(run) {
     wrap.appendChild(table);
     routesArea.appendChild(wrap);
   }
+  recomputeDupes();
 }
 
 function rerenderRoute(routeId) {
@@ -439,6 +507,7 @@ function rerenderRoute(routeId) {
       ? buildSoullinkCard(route, run)
       : buildNormalRow(route, run),
   );
+  applyDupeBadges(); // re-add badges to the rebuilt element from current state
 }
 
 function buildNormalRow(route, run) {
@@ -452,6 +521,7 @@ function buildNormalRow(route, run) {
 
   const spriteTd = el("td", "col-sprite");
   const box = el("div", "sprite-box");
+  if (enc) box.dataset.encId = enc.id;
   renderSprite(box, enc?.sprite_url);
   spriteTd.appendChild(box);
 
@@ -491,6 +561,7 @@ function buildSoullinkCard(route, run) {
 
     const top = el("div", "enc-top");
     const box = el("div", "sprite-box");
+    if (enc) box.dataset.encId = enc.id;
     renderSprite(box, enc?.sprite_url);
     top.append(box, buildEncounterPicker(enc, box));
 
@@ -598,6 +669,7 @@ async function patchEncounter(enc, fields) {
     if (res.partner) applyEncounter(res.partner);
     rerenderRoute(enc.route_id);
     refreshSidebar();
+    await recomputeDupes();
   } catch (err) {
     toast(err.message);
   }
@@ -658,7 +730,18 @@ function buildEncounterPicker(enc, spriteBox) {
     }
     if ((entry || rawText) && !enc.status) fields.status = "caught";
     closeList();
-    await patchEncounter(enc, fields);
+    await patchEncounter(enc, fields); // refreshes dupeInfo
+    // Dupes clause: warn if this entry's evolution line is already an encounter.
+    if (entry) {
+      const info = dupeInfo.get(enc.id);
+      if (info) {
+        const run = runs.find((r) => r.id === activeRunId);
+        const who = run?.mode === "soullink" ? ` (${playerLabel(run, info.slot)})` : "";
+        toast(
+          `⚠️ Dupe! ${entry.display}'s evolution line is already an encounter on ${info.routeName}${who}.`,
+        );
+      }
+    }
   };
   const setActive = (idx) => {
     if (!list) return;

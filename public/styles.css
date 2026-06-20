@@ -266,6 +266,7 @@ select:focus {
 }
 
 .sprite-box {
+  position: relative;
   width: 48px;
   height: 48px;
   display: flex;
@@ -282,6 +283,24 @@ select:focus {
   height: 46px;
   image-rendering: pixelated;
   object-fit: contain;
+}
+
+.sprite-box.has-dupe {
+  border-color: #f0a020;
+}
+
+.dupe-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 0.62rem;
+  line-height: 1;
+  font-weight: 800;
+  color: #1a1200;
+  background: #f0a020;
+  border-bottom-left-radius: 6px;
+  padding: 1px 3px 2px;
+  cursor: help;
 }
 
 .sprite-box.empty::after {
