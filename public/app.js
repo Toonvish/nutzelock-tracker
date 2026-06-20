@@ -235,6 +235,22 @@ function filterPokedex(q, limit = 40) {
 function closeAllCombos() {
   for (const ul of document.querySelectorAll(".combo-list")) ul.remove();
 }
+
+/** Position a (fixed) combo dropdown under its input, flipping above when the
+ *  page is filled and there's more room up top. Caps height to the space. */
+function positionCombo(inp, list) {
+  const r = inp.getBoundingClientRect();
+  const margin = 8;
+  const spaceBelow = window.innerHeight - r.bottom - margin;
+  const spaceAbove = r.top - margin;
+  const natural = Math.min(list.scrollHeight, 280);
+  const openUp = natural > spaceBelow && spaceAbove > spaceBelow;
+  const h = Math.min(natural, openUp ? spaceAbove : spaceBelow);
+  list.style.maxHeight = `${h}px`;
+  list.style.left = `${r.left}px`;
+  list.style.width = `${Math.max(r.width, 200)}px`;
+  list.style.top = `${openUp ? r.top - h - 2 : r.bottom + 2}px`;
+}
 document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".combo") && !e.target.closest(".combo-list"))
     closeAllCombos();
@@ -819,11 +835,7 @@ function buildEncounterPicker(enc, spriteBox) {
     activeIdx = -1;
   };
   const positionList = () => {
-    if (!list) return;
-    const r = inp.getBoundingClientRect();
-    list.style.left = `${r.left}px`;
-    list.style.top = `${r.bottom + 2}px`;
-    list.style.width = `${Math.max(r.width, 200)}px`;
+    if (list) positionCombo(inp, list);
   };
   const commit = async (entry, rawText) => {
     let fields;
@@ -1242,11 +1254,7 @@ function buildMatchupPicker(onPick) {
     activeIdx = -1;
   };
   const position = () => {
-    if (!list) return;
-    const r = inp.getBoundingClientRect();
-    list.style.left = `${r.left}px`;
-    list.style.top = `${r.bottom + 2}px`;
-    list.style.width = `${Math.max(r.width, 200)}px`;
+    if (list) positionCombo(inp, list);
   };
   const choose = (entry) => {
     inp.value = entry.display;
