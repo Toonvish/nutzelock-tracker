@@ -12,6 +12,7 @@
   --blue: #4a9eff;
   --red: #f0556a;
   --gray: #6b7280;
+  --bro: #c77dff; /* "Bro failed" — partner's linked loss */
   --radius: 10px;
   font-size: 15px;
 }
@@ -218,12 +219,12 @@ select:focus {
   overflow-x: auto;
 }
 
-#routes-table {
+.routes-table {
   width: 100%;
   border-collapse: collapse;
 }
 
-#routes-table th {
+.routes-table th {
   text-align: left;
   font-size: 0.75rem;
   text-transform: uppercase;
@@ -233,7 +234,7 @@ select:focus {
   padding: 0 10px 8px;
 }
 
-#routes-table td {
+.routes-table td {
   padding: 8px 10px;
   border-top: 1px solid var(--border);
   vertical-align: middle;
@@ -253,7 +254,7 @@ select:focus {
   text-align: right;
 }
 
-#routes-table tbody tr {
+.routes-table tbody tr {
   transition: opacity 0.12s;
 }
 
@@ -356,17 +357,27 @@ select.status[data-status="fainted"] {
 select.status[data-status="missed"] {
   color: var(--gray);
 }
+select.status[data-status="bro_failed"] {
+  color: var(--bro);
+}
 
-/* Row dimming by status */
-tr[data-status="fainted"] {
+/* Row / panel dimming by status (normal rows + soullink panels) */
+tr[data-status="fainted"],
+.enc-panel[data-status="fainted"] {
   opacity: 0.6;
 }
 tr[data-status="fainted"] .pokemon-cell input,
-tr[data-status="fainted"] .nick-cell input {
+tr[data-status="fainted"] .nick-cell input,
+.enc-panel[data-status="fainted"] .nick,
+.enc-panel[data-status="fainted"] .combo input {
   text-decoration: line-through;
 }
-tr[data-status="missed"] {
+tr[data-status="missed"],
+.enc-panel[data-status="missed"] {
   opacity: 0.45;
+}
+.enc-panel[data-status="bro_failed"] {
+  border-color: var(--bro);
 }
 
 .toast {
@@ -523,4 +534,152 @@ tr[data-status="missed"] {
 
 .evolve-option:hover {
   border-color: var(--primary);
+}
+
+/* ---- Run header: sync indicator ---- */
+.run-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sync-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--gray);
+  box-shadow: 0 0 0 3px rgba(107, 114, 128, 0.18);
+}
+.sync-dot.on {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.22);
+}
+
+/* ---- Locked (password) screen ---- */
+.locked {
+  margin-top: 12vh;
+  text-align: center;
+}
+.unlock {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ---- Soullink cards ---- */
+.cards {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.route-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.card-head .route-name {
+  flex: 1;
+  font-weight: 600;
+}
+.card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.enc-panel {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  transition: opacity 0.12s, border-color 0.12s;
+}
+.enc-player {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.enc-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.enc-top .combo {
+  flex: 1;
+}
+.enc-top .combo input {
+  width: 100%;
+}
+.enc-panel .nick {
+  width: 100%;
+  margin-top: 8px;
+}
+.enc-status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.enc-status-row .status {
+  flex: 1;
+}
+
+@media (max-width: 620px) {
+  .card-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---- New-run form (modal) ---- */
+.run-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.run-form h3 {
+  margin: 0;
+}
+.run-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+.run-form label.radio {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.mode-field {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mode-field legend {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.soullink-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.run-form .btn {
+  align-self: flex-start;
 }

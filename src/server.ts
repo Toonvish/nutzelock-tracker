@@ -1,19 +1,26 @@
-// Bun HTTP server: JSON API + static frontend for the Nuzlocke tracker.
-// Binds to localhost only (single-machine use).
+// Bun HTTP + WebSocket server: JSON API, static frontend, and live sync.
+// Binds to 0.0.0.0 so two players on the same network can play together.
 import {
   STATUSES,
+  MODES,
   type Status,
+  type Mode,
+  type RunRow,
   listRuns,
   getRun,
   createRun,
+  updateRun,
   deleteRun,
   listRoutes,
   createRoute,
-  updateRoute,
+  updateRouteName,
   deleteRoute,
+  getRouteRunId,
+  getEncounterRunId,
+  updateEncounter,
 } from "./db.ts";
-// Embed the frontend into the binary so `bun build --compile` produces a single
-// self-contained executable. In dev (`bun run`) these resolve to files on disk.
+import type { Server, ServerWebSocket } from "bun";
+// Embed the frontend so `bun build --compile` yields a single executable.
 import indexHtml from "../public/index.html" with { type: "file" };
 import appJs from "../public/app.js" with { type: "file" };
 import stylesCss from "../public/styles.css" with { type: "file" };
@@ -38,17 +45,53 @@ const bad = (msg: string, status = 400) => json({ error: msg }, status);
 function isStatus(v: unknown): v is Status {
   return typeof v === "string" && (STATUSES as readonly string[]).includes(v);
 }
-
-/** Optional string field: trimmed string, or null if empty/absent. */
+function isMode(v: unknown): v is Mode {
+  return typeof v === "string" && (MODES as readonly string[]).includes(v);
+}
 function optStr(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
   return t === "" ? null : t;
 }
 
+// ---- Access tokens for password-protected runs (in-memory) ----
+const runTokens = new Map<number, Set<string>>();
+
+function issueToken(runId: number): string {
+  const token = crypto.randomUUID();
+  if (!runTokens.has(runId)) runTokens.set(runId, new Set());
+  runTokens.get(runId)!.add(token);
+  return token;
+}
+function hasAccess(run: RunRow, token: string | null): boolean {
+  if (!run.password_hash) return true; // open run
+  return !!token && !!runTokens.get(run.id)?.has(token);
+}
+
+// `null` = authorized; otherwise a 401 response to return.
+function authGuard(run: RunRow | null, token: string | null): Response | null {
+  if (!run) return bad("not found", 404);
+  if (!hasAccess(run, token)) return bad("locked", 401);
+  return null;
+}
+
+// ---- Live sync ----
+let server: Server;
+function broadcastRoutes(runId: number) {
+  server?.publish(`run:${runId}`, JSON.stringify({ type: "routes", runId }));
+}
+function broadcastRuns() {
+  server?.publish("runs", JSON.stringify({ type: "runs" }));
+}
+
+interface WsData {
+  runId: number | null;
+}
+
 async function handleApi(req: Request, url: URL): Promise<Response> {
   const path = url.pathname;
   const method = req.method;
+  const token = req.headers.get("x-run-token");
   const body = async () => {
     try {
       return (await req.json()) as Record<string, unknown>;
@@ -56,7 +99,8 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       return {} as Record<string, unknown>;
     }
   };
-  const idFromPath = (prefix: string) => Number(path.slice(prefix.length).split("/")[0]);
+  const idFromPath = (prefix: string) =>
+    Number(path.slice(prefix.length).split("/")[0]);
 
   // --- Runs ---
   if (path === "/api/runs" && method === "GET") {
@@ -66,34 +110,110 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const b = await body();
     const name = String(b.name ?? "").trim();
     if (!name) return bad("name required");
-    return json(createRun(name, optStr(b.game)), 201);
+    const mode = isMode(b.mode) ? b.mode : "normal";
+    const password = optStr(b.password);
+    const passwordHash = password ? Bun.password.hashSync(password) : null;
+    const run = createRun({
+      name,
+      game: optStr(b.game),
+      mode,
+      player1: mode === "soullink" ? optStr(b.player1) ?? "Player 1" : null,
+      player2: mode === "soullink" ? optStr(b.player2) ?? "Player 2" : null,
+      passwordHash,
+    });
+    broadcastRuns();
+    // Give the creator an access token so they don't have to re-enter it.
+    const out: Record<string, unknown> = { ...run, password_hash: undefined };
+    if (passwordHash) out.token = issueToken(run.id);
+    return json(out, 201);
   }
+
+  // --- Unlock a protected run ---
+  if (path.startsWith("/api/runs/") && path.endsWith("/unlock") && method === "POST") {
+    const id = idFromPath("/api/runs/");
+    const run = getRun(id);
+    if (!run) return bad("not found", 404);
+    if (!run.password_hash) return json({ token: null }); // not protected
+    const b = await body();
+    const password = String(b.password ?? "");
+    if (!Bun.password.verifySync(password, run.password_hash))
+      return bad("wrong password", 401);
+    return json({ token: issueToken(id) });
+  }
+
+  // --- Routes of a run ---
   if (path.startsWith("/api/runs/") && path.endsWith("/routes")) {
     const id = idFromPath("/api/runs/");
-    if (!getRun(id)) return bad("run not found", 404);
+    const run = getRun(id);
+    const denied = authGuard(run, token);
+    if (denied) return denied;
     if (method === "GET") return json(listRoutes(id));
     if (method === "POST") {
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("route name required");
-      return json(createRoute(id, name), 201);
+      const route = createRoute(id, name);
+      broadcastRoutes(id);
+      broadcastRuns();
+      return json(route, 201);
     }
   }
-  if (path.startsWith("/api/runs/") && method === "DELETE") {
-    deleteRun(idFromPath("/api/runs/"));
+
+  // --- Run rename / delete ---
+  if (path.startsWith("/api/runs/") && (method === "PUT" || method === "DELETE")) {
+    const id = idFromPath("/api/runs/");
+    const run = getRun(id);
+    const denied = authGuard(run, token);
+    if (denied) return denied;
+    if (method === "PUT") {
+      const b = await body();
+      const fields: { name?: string; game?: string | null } = {};
+      if ("name" in b) {
+        const name = String(b.name ?? "").trim();
+        if (!name) return bad("name cannot be empty");
+        fields.name = name;
+      }
+      if ("game" in b) fields.game = optStr(b.game);
+      const updated = updateRun(id, fields);
+      broadcastRuns();
+      return updated ? json(updated) : bad("not found", 404);
+    }
+    deleteRun(id);
+    runTokens.delete(id);
+    broadcastRuns();
     return json({ ok: true });
   }
 
-  // --- Routes ---
-  if (path.startsWith("/api/routes/") && method === "PUT") {
+  // --- Route rename / delete ---
+  if (path.startsWith("/api/routes/") && (method === "PUT" || method === "DELETE")) {
     const id = idFromPath("/api/routes/");
-    const b = await body();
-    const fields: Parameters<typeof updateRoute>[1] = {};
-    if ("name" in b) {
+    const runId = getRouteRunId(id);
+    const denied = authGuard(runId ? getRun(runId) : null, token);
+    if (denied) return denied;
+    if (method === "PUT") {
+      const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("route name cannot be empty");
-      fields.name = name;
+      const row = updateRouteName(id, name);
+      if (runId) broadcastRoutes(runId);
+      return row ? json(row) : bad("not found", 404);
     }
+    deleteRoute(id);
+    if (runId) {
+      broadcastRoutes(runId);
+      broadcastRuns();
+    }
+    return json({ ok: true });
+  }
+
+  // --- Encounter update (the live-synced, soullink-aware edit) ---
+  if (path.startsWith("/api/encounters/") && method === "PUT") {
+    const id = idFromPath("/api/encounters/");
+    const runId = getEncounterRunId(id);
+    const denied = authGuard(runId ? getRun(runId) : null, token);
+    if (denied) return denied;
+    const b = await body();
+    const fields: Parameters<typeof updateEncounter>[1] = {};
     if ("pokemon_id" in b)
       fields.pokemon_id =
         typeof b.pokemon_id === "number" && Number.isFinite(b.pokemon_id)
@@ -107,29 +227,35 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       else if (isStatus(b.status)) fields.status = b.status;
       else return bad("invalid status");
     }
-    const row = updateRoute(id, fields);
-    return row ? json(row) : bad("route not found", 404);
-  }
-  if (path.startsWith("/api/routes/") && method === "DELETE") {
-    deleteRoute(idFromPath("/api/routes/"));
-    return json({ ok: true });
+    const res = updateEncounter(id, fields);
+    if (!res) return bad("not found", 404);
+    if (runId) {
+      broadcastRoutes(runId);
+      broadcastRuns();
+    }
+    return json(res);
   }
 
   return bad("not found", 404);
 }
 
 function serveStatic(url: URL): Response {
-  const asset = ASSETS[url.pathname] ?? ASSETS["/"]; // SPA fallback to index.html
+  const asset = ASSETS[url.pathname] ?? ASSETS["/"]; // SPA fallback
   return new Response(Bun.file(asset.path), {
     headers: { "content-type": asset.type },
   });
 }
 
-const server = Bun.serve({
+server = Bun.serve<WsData>({
   port: PORT,
-  hostname: "127.0.0.1",
-  async fetch(req) {
+  hostname: "0.0.0.0",
+  async fetch(req, srv) {
     const url = new URL(req.url);
+    if (url.pathname === "/ws") {
+      return srv.upgrade(req, { data: { runId: null } })
+        ? undefined
+        : new Response("websocket upgrade failed", { status: 400 });
+    }
     try {
       if (url.pathname.startsWith("/api/")) return await handleApi(req, url);
       return serveStatic(url);
@@ -138,7 +264,35 @@ const server = Bun.serve({
       return json({ error: "internal error" }, 500);
     }
   },
+  websocket: {
+    open(ws: ServerWebSocket<WsData>) {
+      ws.subscribe("runs"); // sidebar/run-list changes
+    },
+    message(ws: ServerWebSocket<WsData>, raw) {
+      let msg: { op?: string; runId?: number; token?: string };
+      try {
+        msg = JSON.parse(String(raw));
+      } catch {
+        return;
+      }
+      if (msg.op === "watch" && typeof msg.runId === "number") {
+        const run = getRun(msg.runId);
+        if (!run) return;
+        if (!hasAccess(run, msg.token ?? null)) {
+          ws.send(JSON.stringify({ type: "denied", runId: msg.runId }));
+          return;
+        }
+        if (ws.data.runId) ws.unsubscribe(`run:${ws.data.runId}`);
+        ws.data.runId = msg.runId;
+        ws.subscribe(`run:${msg.runId}`);
+      }
+    },
+    close() {},
+  },
 });
 
 console.log(`\n🎮  Custom Nuzlocke Tracker running`);
-console.log(`    Local:   http://localhost:${server.port}\n`);
+console.log(`    Local:   http://localhost:${server.port}`);
+console.log(
+  `    Network: http://<your-LAN-ip>:${server.port}  (share with your soullink partner)\n`,
+);

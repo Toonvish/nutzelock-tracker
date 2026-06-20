@@ -28,33 +28,33 @@
               <h2 id="run-title"></h2>
               <p id="run-subtitle" class="muted"></p>
             </div>
-            <button id="delete-run-btn" class="btn danger">Delete run</button>
+            <div class="run-header-actions">
+              <span id="sync-dot" class="sync-dot" title="Live sync"></span>
+              <button id="delete-run-btn" class="btn danger">Delete run</button>
+            </div>
           </header>
 
-          <form id="add-route-form" class="add-route">
-            <input
-              id="route-name-input"
-              type="text"
-              placeholder="Add a route (e.g. Route 1, Viridian Forest)…"
-              autocomplete="off"
-            />
-            <button type="submit" class="btn primary">+ Add route</button>
-          </form>
+          <!-- Lock screen for password-protected runs (shown until unlocked) -->
+          <div id="locked-view" class="locked" hidden>
+            <p>🔒 This session is password-protected.</p>
+            <form id="unlock-form" class="unlock">
+              <input id="unlock-input" type="password" placeholder="Password" autocomplete="off" />
+              <button type="submit" class="btn primary">Unlock</button>
+            </form>
+          </div>
 
-          <div class="table-wrap">
-            <table id="routes-table">
-              <thead>
-                <tr>
-                  <th class="col-route">Route</th>
-                  <th class="col-sprite"></th>
-                  <th class="col-pokemon">Pokémon</th>
-                  <th class="col-nick">Nickname</th>
-                  <th class="col-status">Status</th>
-                  <th class="col-actions"></th>
-                </tr>
-              </thead>
-              <tbody id="routes-body"></tbody>
-            </table>
+          <div id="routes-section">
+            <form id="add-route-form" class="add-route">
+              <input
+                id="route-name-input"
+                type="text"
+                placeholder="Add a route (e.g. Route 1, Viridian Forest)…"
+                autocomplete="off"
+              />
+              <button type="submit" class="btn primary">+ Add route</button>
+            </form>
+
+            <div id="routes-area"></div>
           </div>
         </section>
       </main>

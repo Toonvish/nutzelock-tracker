@@ -1,8 +1,16 @@
 // Custom Nuzlocke Tracker — dependency-free SPA.
-// Talks to the Bun JSON API and pulls Pokémon names/sprites from PokeAPI.
+// REST + WebSocket against the Bun server; Pokémon data from PokeAPI.
 
-const STATUSES = ["caught", "boxed", "fainted", "missed"];
+const MANUAL_STATUSES = ["caught", "boxed", "fainted", "missed"];
+const STATUS_LABELS = {
+  caught: "Caught",
+  boxed: "Boxed",
+  fainted: "Fainted",
+  missed: "Missed",
+  bro_failed: "Bro failed",
+};
 const ACTIVE_RUN_KEY = "nuzlocke.activeRun";
+const TOKENS_KEY = "nuzlocke.tokens";
 const POKEDEX_KEY = "nuzlocke.pokedex.v1";
 const POKEAPI = "https://pokeapi.co/api/v2";
 const POKEAPI_LIST = `${POKEAPI}/pokemon?limit=100000`;
@@ -25,22 +33,39 @@ const emptyState = $("#empty-state");
 const runView = $("#run-view");
 const runTitle = $("#run-title");
 const runSubtitle = $("#run-subtitle");
-const routesBody = $("#routes-body");
+const routesArea = $("#routes-area");
 
 // ---- State ----
 let runs = [];
 let activeRunId = Number(localStorage.getItem(ACTIVE_RUN_KEY)) || null;
 let routes = [];
-/** Map: display-name (lowercase) -> { id, apiName, display } */
-let pokedex = new Map();
-/** Same entries as a flat array, for prefix/substring filtering in the picker. */
+let pokedex = new Map(); // display(lower) -> { id, apiName, display }
 let pokedexList = [];
+let ws = null;
+let pendingRoutesRefresh = false;
+
+let tokens = {};
+try {
+  tokens = JSON.parse(localStorage.getItem(TOKENS_KEY) || "{}");
+} catch {
+  tokens = {};
+}
+const saveTokens = () => localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
+const tokenFor = (id) => tokens[id];
+const setToken = (id, t) => {
+  tokens[id] = t;
+  saveTokens();
+};
+const runHeaders = (id = activeRunId) => {
+  const t = tokenFor(id);
+  return t ? { "x-run-token": t } : {};
+};
 
 // ---- Helpers ----
 const api = async (path, opts = {}) => {
   const res = await fetch(path, {
-    headers: { "content-type": "application/json" },
     ...opts,
+    headers: { "content-type": "application/json", ...(opts.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
@@ -48,11 +73,32 @@ const api = async (path, opts = {}) => {
 };
 
 function toast(msg) {
-  const el = document.createElement("div");
-  el.className = "toast";
-  el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  const node = document.createElement("div");
+  node.className = "toast";
+  node.textContent = msg;
+  document.body.appendChild(node);
+  setTimeout(() => node.remove(), 3200);
+}
+
+function el(tag, className) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  return e;
+}
+function input(value, placeholder) {
+  const i = document.createElement("input");
+  i.type = "text";
+  i.value = value;
+  i.placeholder = placeholder || "";
+  i.autocomplete = "off";
+  return i;
+}
+function iconBtn(label, title, cls) {
+  const b = el("button", "icon-btn" + (cls ? ` ${cls}` : ""));
+  b.textContent = label;
+  b.title = title;
+  b.type = "button";
+  return b;
 }
 
 /** "mr-mime" -> "Mr Mime" */
@@ -62,9 +108,24 @@ function displayName(apiName) {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
 }
+const spriteUrl = (id) => `${SPRITE_BASE}/${id}.png`;
 
-function spriteUrl(id) {
-  return `${SPRITE_BASE}/${id}.png`;
+function renderSprite(box, url) {
+  box.innerHTML = "";
+  if (url) {
+    box.classList.remove("empty");
+    const img = document.createElement("img");
+    img.src = url;
+    img.alt = "";
+    img.loading = "lazy";
+    img.addEventListener("error", () => {
+      box.classList.add("empty");
+      img.remove();
+    });
+    box.appendChild(img);
+  } else {
+    box.classList.add("empty");
+  }
 }
 
 // ---- Pokédex (PokeAPI) ----
@@ -74,9 +135,8 @@ async function loadPokedex() {
     const cached = localStorage.getItem(POKEDEX_KEY);
     if (cached) entries = JSON.parse(cached);
   } catch {
-    /* ignore corrupt cache */
+    /* ignore */
   }
-
   if (!entries) {
     try {
       const data = await api(POKEAPI_LIST);
@@ -87,38 +147,31 @@ async function loadPokedex() {
           return id ? { id, apiName: r.name, display: displayName(r.name) } : null;
         })
         .filter(Boolean)
-        // Drop alternate/mega forms with huge ids that lack default sprites.
         .filter((e) => e.id <= 10000);
       localStorage.setItem(POKEDEX_KEY, JSON.stringify(entries));
-    } catch (err) {
+    } catch {
       toast("Could not reach PokeAPI — you can still type names manually.");
       entries = [];
     }
   }
-
   pokedexList = entries;
   pokedex = new Map();
   for (const e of entries) pokedex.set(e.display.toLowerCase(), e);
 }
 
-/** Resolve typed text to a pokédex entry: exact match first, else a prefix match. */
 function resolvePokemon(text) {
   const key = text.trim().toLowerCase();
   if (!key) return null;
   const exact = pokedex.get(key) || pokedex.get(displayName(key).toLowerCase());
   if (exact) return exact;
-  // Forgiving fallback: first entry whose name starts with the typed text
-  // (so "pika" → Pikachu even without picking from the dropdown).
   let best = null;
   for (const e of pokedex.values()) {
-    if (e.display.toLowerCase().startsWith(key)) {
-      if (!best || e.id < best.id) best = e;
-    }
+    if (e.display.toLowerCase().startsWith(key) && (!best || e.id < best.id))
+      best = e;
   }
   return best;
 }
 
-/** Up to `limit` entries matching `q`: prefix matches first, then substring. */
 function filterPokedex(q, limit = 40) {
   const starts = [];
   const contains = [];
@@ -130,26 +183,21 @@ function filterPokedex(q, limit = 40) {
   return starts.concat(contains).slice(0, limit);
 }
 
-/** Close every open picker dropdown (only one should be open at a time). */
 function closeAllCombos() {
   for (const ul of document.querySelectorAll(".combo-list")) ul.remove();
 }
-
-// Clicking anywhere outside an open picker closes it.
 document.addEventListener("mousedown", (e) => {
   if (!e.target.closest(".combo") && !e.target.closest(".combo-list"))
     closeAllCombos();
 });
-// The dropdown is fixed-positioned, so scrolling would detach it — just close.
 window.addEventListener("scroll", closeAllCombos, true);
 window.addEventListener("resize", closeAllCombos);
 
 // ---- PokeAPI detail lookups (on-demand, cached) ----
-const detailCache = new Map(); // id -> { id, name, bst, stats, abilities, speciesUrl }
-const abilityCache = new Map(); // name -> effect text
-const evoCache = new Map(); // id -> [pokedex entries]
+const detailCache = new Map();
+const abilityCache = new Map();
+const evoCache = new Map();
 
-/** Base stats (BST), abilities and species link for a Pokémon id. */
 async function getPokemonDetail(id) {
   if (detailCache.has(id)) return detailCache.get(id);
   const d = await api(`${POKEAPI}/pokemon/${id}`);
@@ -158,17 +206,13 @@ async function getPokemonDetail(id) {
     name: d.name,
     stats: d.stats.map((s) => ({ name: s.stat.name, value: s.base_stat })),
     bst: d.stats.reduce((sum, s) => sum + s.base_stat, 0),
-    abilities: d.abilities.map((a) => ({
-      name: a.ability.name,
-      hidden: a.is_hidden,
-    })),
+    abilities: d.abilities.map((a) => ({ name: a.ability.name, hidden: a.is_hidden })),
     speciesUrl: d.species.url,
   };
   detailCache.set(id, detail);
   return detail;
 }
 
-/** Short English effect text for an ability. */
 async function getAbilityEffect(name) {
   if (abilityCache.has(name)) return abilityCache.get(name);
   let text = "No description available.";
@@ -185,7 +229,6 @@ async function getAbilityEffect(name) {
   return text;
 }
 
-/** Pokédex entries this Pokémon evolves directly into (0, 1, or several). */
 async function getEvolutions(detail) {
   if (evoCache.has(detail.id)) return evoCache.get(detail.id);
   const species = await api(detail.speciesUrl);
@@ -198,12 +241,49 @@ async function getEvolutions(detail) {
     }
     return node.evolves_to.some(walk);
   })(chain.chain);
-  // Map species names back to our cached pokédex entries (id + display).
   const opts = names
     .map((n) => pokedex.get(displayName(n).toLowerCase()))
     .filter(Boolean);
   evoCache.set(detail.id, opts);
   return opts;
+}
+
+// ---- Live sync (WebSocket) ----
+function setSync(on) {
+  const d = $("#sync-dot");
+  if (d) d.classList.toggle("on", on);
+}
+function watchRun(runId) {
+  if (ws && ws.readyState === 1)
+    ws.send(JSON.stringify({ op: "watch", runId, token: tokenFor(runId) }));
+}
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => {
+    setSync(true);
+    if (activeRunId) watchRun(activeRunId);
+  };
+  ws.onclose = () => {
+    setSync(false);
+    setTimeout(connectWS, 1500);
+  };
+  ws.onerror = () => {};
+  ws.onmessage = (ev) => {
+    let m;
+    try {
+      m = JSON.parse(ev.data);
+    } catch {
+      return;
+    }
+    if (m.type === "runs") refreshSidebar();
+    else if (m.type === "routes" && m.runId === activeRunId) refreshRoutes();
+    else if (m.type === "denied" && m.runId === activeRunId) {
+      delete tokens[activeRunId];
+      saveTokens();
+      loadActiveRun();
+    }
+  };
 }
 
 // ---- Runs (sidebar) ----
@@ -215,15 +295,26 @@ async function loadRuns() {
   await loadActiveRun();
 }
 
+/** Refetch runs and update the sidebar + header only (leaves routes alone). */
+async function refreshSidebar() {
+  runs = await api("/api/runs");
+  renderRuns();
+  const run = runs.find((r) => r.id === activeRunId);
+  if (run) updateRunHeader(run);
+}
+
 function renderRuns() {
   runList.innerHTML = "";
   for (const run of runs) {
-    const li = document.createElement("li");
-    li.className = "run-item" + (run.id === activeRunId ? " active" : "");
+    const li = el("li", "run-item" + (run.id === activeRunId ? " active" : ""));
     li.dataset.id = run.id;
-    const tally = `${run.caught} caught · ${run.boxed} boxed · ${run.fainted} fainted`;
+    const prefix =
+      (run.protected ? "🔒 " : "") + (run.mode === "soullink" ? "🔗 " : "");
+    const tally =
+      `${run.caught} caught · ${run.fainted} fainted` +
+      (run.bro_failed ? ` · ${run.bro_failed} bro` : "");
     li.innerHTML = `<div class="run-name"></div><div class="run-tally">${tally}</div>`;
-    li.querySelector(".run-name").textContent = run.name;
+    li.querySelector(".run-name").textContent = prefix + run.name;
     li.addEventListener("click", () => selectRun(run.id));
     runList.appendChild(li);
   }
@@ -236,64 +327,305 @@ async function selectRun(id) {
   await loadActiveRun();
 }
 
+function updateRunHeader(run) {
+  runTitle.textContent = run.name;
+  const parts = [];
+  if (run.mode === "soullink") {
+    parts.push(
+      "🔗 Soullink · " + `${run.player1 || "Player 1"} & ${run.player2 || "Player 2"}`,
+    );
+  }
+  if (run.game) parts.push(run.game);
+  parts.push(`${run.routes} routes`);
+  if (run.protected) parts.push("🔒 protected");
+  runSubtitle.textContent = parts.join(" · ");
+}
+
 async function loadActiveRun() {
-  if (!activeRunId) {
+  const run = runs.find((r) => r.id === activeRunId);
+  if (!run) {
     runView.hidden = true;
     emptyState.hidden = false;
     return;
   }
-  const run = runs.find((r) => r.id === activeRunId);
   emptyState.hidden = true;
   runView.hidden = false;
-  runTitle.textContent = run.name;
-  runSubtitle.textContent =
-    (run.game ? `${run.game} · ` : "") + `${run.routes} routes`;
-  routes = await api(`/api/runs/${activeRunId}/routes`);
-  renderRoutes();
+  updateRunHeader(run);
+
+  if (run.protected && !tokenFor(run.id)) {
+    $("#locked-view").hidden = false;
+    $("#routes-section").hidden = true;
+    $("#unlock-input").focus();
+    return;
+  }
+  $("#locked-view").hidden = true;
+  $("#routes-section").hidden = false;
+  watchRun(run.id);
+  await loadRoutesData();
 }
 
-// ---- Routes table ----
-function renderRoutes() {
-  routesBody.innerHTML = "";
-  for (const route of routes) routesBody.appendChild(routeRow(route));
+async function loadRoutesData() {
+  pendingRoutesRefresh = false;
+  if (!activeRunId) return;
+  try {
+    routes = await api(`/api/runs/${activeRunId}/routes`, {
+      headers: runHeaders(),
+    });
+  } catch (err) {
+    if (String(err.message).includes("locked")) {
+      delete tokens[activeRunId];
+      saveTokens();
+      return loadActiveRun();
+    }
+    throw err;
+  }
+  renderRoutes(runs.find((r) => r.id === activeRunId));
 }
 
-/**
- * A searchable Pokémon picker: a text input plus a sprite-thumbnail dropdown.
- * The dropdown is appended to <body> as a fixed-position element so it is never
- * clipped by the table's overflow containers. Returns the wrapper element.
- */
-function buildPokemonPicker(route, spriteBox) {
-  const wrap = el("div", "combo");
-  const inp = input(
-    route.pokemon_name ? displayName(route.pokemon_name) : "",
-    "Pick or type…",
+/** WS told us routes changed — refetch, but never clobber an in-progress edit. */
+function refreshRoutes() {
+  const ae = document.activeElement;
+  if (ae && ae.closest && ae.closest("#routes-area")) {
+    pendingRoutesRefresh = true;
+    return;
+  }
+  loadRoutesData();
+}
+routesArea.addEventListener("focusout", () => {
+  setTimeout(() => {
+    const ae = document.activeElement;
+    if (pendingRoutesRefresh && !(ae && ae.closest && ae.closest("#routes-area")))
+      loadRoutesData();
+  }, 120);
+});
+
+// ---- Routes rendering ----
+function renderRoutes(run) {
+  routesArea.innerHTML = "";
+  if (!run) return;
+  if (run.mode === "soullink") {
+    const cards = el("div", "cards");
+    for (const route of routes) cards.appendChild(buildSoullinkCard(route, run));
+    routesArea.appendChild(cards);
+  } else {
+    const wrap = el("div", "table-wrap");
+    const table = el("table", "routes-table");
+    table.innerHTML = `<thead><tr>
+      <th class="col-route">Route</th><th class="col-sprite"></th>
+      <th class="col-pokemon">Pokémon</th><th class="col-nick">Nickname</th>
+      <th class="col-status">Status</th><th class="col-actions"></th></tr></thead>`;
+    const tbody = el("tbody");
+    for (const route of routes) tbody.appendChild(buildNormalRow(route, run));
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    routesArea.appendChild(wrap);
+  }
+}
+
+function rerenderRoute(routeId) {
+  const run = runs.find((r) => r.id === activeRunId);
+  const route = routes.find((r) => r.id === routeId);
+  const old = routesArea.querySelector(`[data-route-id="${routeId}"]`);
+  if (!run || !route || !old) return;
+  old.replaceWith(
+    run.mode === "soullink"
+      ? buildSoullinkCard(route, run)
+      : buildNormalRow(route, run),
   );
+}
+
+function buildNormalRow(route, run) {
+  const enc = route.encounters[0];
+  const tr = el("tr");
+  tr.dataset.routeId = route.id;
+  if (enc?.status) tr.dataset.status = enc.status;
+
+  const nameTd = el("td", "route-name-cell");
+  nameTd.appendChild(routeNameInput(route));
+
+  const spriteTd = el("td", "col-sprite");
+  const box = el("div", "sprite-box");
+  renderSprite(box, enc?.sprite_url);
+  spriteTd.appendChild(box);
+
+  const pokeTd = el("td", "pokemon-cell");
+  pokeTd.appendChild(buildEncounterPicker(enc, box));
+
+  const nickTd = el("td", "nick-cell");
+  nickTd.appendChild(nickInput(enc));
+
+  const statusTd = el("td", "col-status");
+  statusTd.appendChild(statusSelect(enc));
+
+  const actionsTd = el("td", "col-actions");
+  actionsTd.append(...encActions(enc), deleteRouteBtn(route));
+
+  tr.append(nameTd, spriteTd, pokeTd, nickTd, statusTd, actionsTd);
+  return tr;
+}
+
+function buildSoullinkCard(route, run) {
+  const card = el("div", "route-card");
+  card.dataset.routeId = route.id;
+
+  const head = el("div", "card-head");
+  head.appendChild(routeNameInput(route));
+  head.appendChild(deleteRouteBtn(route));
+  card.appendChild(head);
+
+  const body = el("div", "card-body");
+  for (const slot of [0, 1]) {
+    const enc = route.encounters.find((e) => e.slot === slot);
+    const panel = el("div", "enc-panel");
+    if (enc?.status) panel.dataset.status = enc.status;
+
+    const label = el("div", "enc-player");
+    label.textContent = slot === 0 ? run.player1 || "Player 1" : run.player2 || "Player 2";
+
+    const top = el("div", "enc-top");
+    const box = el("div", "sprite-box");
+    renderSprite(box, enc?.sprite_url);
+    top.append(box, buildEncounterPicker(enc, box));
+
+    const statusRow = el("div", "enc-status-row");
+    statusRow.append(statusSelect(enc), ...encActions(enc));
+
+    panel.append(label, top, nickInput(enc), statusRow);
+    body.appendChild(panel);
+  }
+  card.appendChild(body);
+  return card;
+}
+
+function routeNameInput(route) {
+  const i = input(route.name, "Route name");
+  i.classList.add("route-name");
+  i.addEventListener("change", async () => {
+    const name = i.value.trim() || route.name;
+    i.value = name;
+    try {
+      await api(`/api/routes/${route.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ name }),
+        headers: runHeaders(),
+      });
+      route.name = name;
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  return i;
+}
+
+function nickInput(enc) {
+  const i = input(enc?.nickname || "", "Nickname");
+  i.classList.add("nick");
+  i.disabled = !enc;
+  i.addEventListener("change", () =>
+    patchEncounter(enc, { nickname: i.value.trim() || null }),
+  );
+  return i;
+}
+
+function statusSelect(enc) {
+  const sel = el("select", "status");
+  sel.disabled = !enc;
+  const opts = [["", "—"], ...MANUAL_STATUSES.map((s) => [s, STATUS_LABELS[s]])];
+  if (enc?.status === "bro_failed") opts.push(["bro_failed", STATUS_LABELS.bro_failed]);
+  for (const [v, l] of opts) {
+    const o = el("option");
+    o.value = v;
+    o.textContent = l;
+    sel.appendChild(o);
+  }
+  sel.value = enc?.status || "";
+  sel.dataset.status = enc?.status || "";
+  sel.addEventListener("change", () =>
+    patchEncounter(enc, { status: sel.value || null }),
+  );
+  return sel;
+}
+
+function encActions(enc) {
+  const has = !!enc?.pokemon_id;
+  const infoBtn = iconBtn("ℹ️", "Base stats & abilities");
+  infoBtn.disabled = !has;
+  infoBtn.addEventListener("click", () => showInfo(enc));
+  const evolveBtn = iconBtn("🧬", "Evolve");
+  evolveBtn.disabled = !has;
+  evolveBtn.addEventListener("click", () => evolve(enc));
+  return [infoBtn, evolveBtn];
+}
+
+function deleteRouteBtn(route) {
+  const b = iconBtn("✕", "Delete route", "del");
+  b.addEventListener("click", async () => {
+    try {
+      await api(`/api/routes/${route.id}`, {
+        method: "DELETE",
+        headers: runHeaders(),
+      });
+      routes = routes.filter((r) => r.id !== route.id);
+      routesArea.querySelector(`[data-route-id="${route.id}"]`)?.remove();
+      refreshSidebar();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+  return b;
+}
+
+/** PUT an encounter change, apply the result (incl. soullink partner), re-render. */
+async function patchEncounter(enc, fields) {
+  if (!enc) return;
+  try {
+    const res = await api(`/api/encounters/${enc.id}`, {
+      method: "PUT",
+      body: JSON.stringify(fields),
+      headers: runHeaders(),
+    });
+    applyEncounter(res.encounter);
+    if (res.partner) applyEncounter(res.partner);
+    rerenderRoute(enc.route_id);
+    refreshSidebar();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function applyEncounter(e) {
+  const route = routes.find((r) => r.id === e.route_id);
+  if (!route) return;
+  const i = route.encounters.findIndex((x) => x.id === e.id);
+  if (i >= 0) route.encounters[i] = e;
+  else route.encounters.push(e);
+}
+
+// ---- Pokémon picker (custom dropdown with sprite thumbnails) ----
+function buildEncounterPicker(enc, spriteBox) {
+  const wrap = el("div", "combo");
+  const inp = input(enc?.pokemon_name ? displayName(enc.pokemon_name) : "", "Pick or type…");
+  inp.disabled = !enc;
   wrap.appendChild(inp);
 
-  let list = null; // the live dropdown <ul>, when open
+  let list = null;
   let filtered = [];
   let activeIdx = -1;
-  // Display string we last committed — lets blur skip redundant re-commits.
-  let committed = route.pokemon_name ? displayName(route.pokemon_name) : "";
+  let committed = enc?.pokemon_name ? displayName(enc.pokemon_name) : "";
 
   const closeList = () => {
-    if (list) {
-      list.remove();
-      list = null;
-    }
+    if (list) list.remove();
+    list = null;
     filtered = [];
     activeIdx = -1;
   };
-
   const positionList = () => {
     if (!list) return;
     const r = inp.getBoundingClientRect();
     list.style.left = `${r.left}px`;
     list.style.top = `${r.bottom + 2}px`;
-    list.style.width = `${r.width}px`;
+    list.style.width = `${Math.max(r.width, 200)}px`;
   };
-
   const commit = async (entry, rawText) => {
     let fields;
     if (entry) {
@@ -314,14 +646,10 @@ function buildPokemonPicker(route, spriteBox) {
       renderSprite(spriteBox, null);
       fields = { pokemon_id: null, pokemon_name: null, sprite_url: null };
     }
-    // First time a Pokémon is set on an empty route, default status to "caught".
-    if ((entry || rawText) && !route.status) fields.status = "caught";
+    if ((entry || rawText) && !enc.status) fields.status = "caught";
     closeList();
-    await patchRoute(route, fields);
-    // Rebuild the row so the info/evolve buttons reflect the new Pokémon.
-    replaceRow(route);
+    await patchEncounter(enc, fields);
   };
-
   const setActive = (idx) => {
     if (!list) return;
     const items = [...list.children];
@@ -330,7 +658,6 @@ function buildPokemonPicker(route, spriteBox) {
     items.forEach((li, i) => li.classList.toggle("active", i === activeIdx));
     items[activeIdx].scrollIntoView({ block: "nearest" });
   };
-
   const renderList = () => {
     const q = inp.value.trim().toLowerCase();
     filtered = q ? filterPokedex(q) : [];
@@ -345,12 +672,11 @@ function buildPokemonPicker(route, spriteBox) {
       img.src = spriteUrl(e.id);
       img.alt = "";
       img.loading = "lazy";
-      const name = document.createElement("span");
+      const name = el("span");
       name.textContent = e.display;
       const idTag = el("span", "combo-id");
       idTag.textContent = `#${e.id}`;
       li.append(img, name, idTag);
-      // mousedown fires before the input's blur, so selection isn't lost.
       li.addEventListener("mousedown", (ev) => {
         ev.preventDefault();
         commit(e);
@@ -381,12 +707,11 @@ function buildPokemonPicker(route, spriteBox) {
       closeList();
     }
   });
-  // Commit on blur if the text changed and wasn't already chosen from the list.
   inp.addEventListener("blur", () => {
     setTimeout(() => {
       closeList();
       const text = inp.value.trim();
-      if (text === committed) return; // unchanged (covers click/Enter selection)
+      if (text === committed) return;
       if (!text) return commit(null, "");
       const hit = resolvePokemon(text);
       commit(hit, hit ? null : text);
@@ -396,104 +721,12 @@ function buildPokemonPicker(route, spriteBox) {
   return wrap;
 }
 
-function routeRow(route) {
-  const tr = document.createElement("tr");
-  tr.dataset.id = route.id;
-  if (route.status) tr.dataset.status = route.status;
-
-  // Route name (editable)
-  const nameTd = el("td", "route-name-cell");
-  const nameInput = input(route.name, "Route name");
-  nameInput.addEventListener("change", () =>
-    patchRoute(route, { name: nameInput.value.trim() || route.name }),
-  );
-  nameTd.appendChild(nameInput);
-
-  // Sprite
-  const spriteTd = el("td", "col-sprite");
-  const spriteBox = el("div", "sprite-box");
-  renderSprite(spriteBox, route.sprite_url);
-  spriteTd.appendChild(spriteBox);
-
-  // Pokémon picker (custom dropdown with sprite thumbnails)
-  const pokeTd = el("td", "pokemon-cell");
-  pokeTd.appendChild(buildPokemonPicker(route, spriteBox));
-
-  // Nickname
-  const nickTd = el("td", "nick-cell");
-  const nickInput = input(route.nickname || "", "Nickname");
-  nickInput.addEventListener("change", () =>
-    patchRoute(route, { nickname: nickInput.value.trim() || null }),
-  );
-  nickTd.appendChild(nickInput);
-
-  // Status
-  const statusTd = el("td", "col-status");
-  const sel = document.createElement("select");
-  sel.className = "status";
-  const blank = document.createElement("option");
-  blank.value = "";
-  blank.textContent = "—";
-  sel.appendChild(blank);
-  for (const s of STATUSES) {
-    const o = document.createElement("option");
-    o.value = s;
-    o.textContent = s.charAt(0).toUpperCase() + s.slice(1);
-    sel.appendChild(o);
-  }
-  sel.value = route.status || "";
-  sel.dataset.status = route.status || "";
-  sel.addEventListener("change", () =>
-    patchRoute(route, { status: sel.value || null }),
-  );
-  statusTd.appendChild(sel);
-
-  // Actions: info, evolve, delete
-  const actionsTd = el("td", "col-actions");
-  const hasMon = !!route.pokemon_id;
-
-  const infoBtn = iconBtn("ℹ️", "Base stats & abilities");
-  infoBtn.disabled = !hasMon;
-  infoBtn.addEventListener("click", () => showInfo(route));
-
-  const evolveBtn = iconBtn("🧬", "Evolve");
-  evolveBtn.disabled = !hasMon;
-  evolveBtn.addEventListener("click", () => evolve(route));
-
-  const delBtn = iconBtn("✕", "Delete route", "del");
-  delBtn.addEventListener("click", async () => {
-    await api(`/api/routes/${route.id}`, { method: "DELETE" });
-    routes = routes.filter((r) => r.id !== route.id);
-    tr.remove();
-    refreshTally();
-  });
-
-  actionsTd.append(infoBtn, evolveBtn, delBtn);
-
-  tr.append(nameTd, spriteTd, pokeTd, nickTd, statusTd, actionsTd);
-  return tr;
-}
-
-function iconBtn(label, title, cls) {
-  const b = el("button", "icon-btn" + (cls ? ` ${cls}` : ""));
-  b.textContent = label;
-  b.title = title;
-  return b;
-}
-
-/** Rebuild a single route row in place (e.g. after its Pokémon changes). */
-function replaceRow(route) {
-  const old = routesBody.querySelector(`tr[data-id="${route.id}"]`);
-  if (old) old.replaceWith(routeRow(route));
-}
-
 // ---- Modal ----
 function escClose(e) {
   if (e.key === "Escape") closeModal();
 }
 function closeModal() {
-  const o = document.querySelector(".modal-overlay");
-  if (o) o.remove();
+  document.querySelector(".modal-overlay")?.remove();
   document.removeEventListener("keydown", escClose);
 }
 function openModal(contentNode) {
@@ -514,13 +747,13 @@ function openModal(contentNode) {
 }
 
 // ---- Info: base stats + abilities ----
-async function showInfo(route) {
-  if (!route.pokemon_id) return;
+async function showInfo(enc) {
+  if (!enc?.pokemon_id) return;
   const content = el("div", "info");
   content.innerHTML = `<p class="muted">Loading…</p>`;
   openModal(content);
   try {
-    const detail = await getPokemonDetail(route.pokemon_id);
+    const detail = await getPokemonDetail(enc.pokemon_id);
     const abilities = await Promise.all(
       detail.abilities.map(async (a) => ({
         ...a,
@@ -534,8 +767,7 @@ async function showInfo(route) {
     const titleWrap = el("div");
     const title = el("h3");
     title.textContent =
-      displayName(detail.name) +
-      (route.nickname ? ` "${route.nickname}"` : "");
+      displayName(detail.name) + (enc.nickname ? ` "${enc.nickname}"` : "");
     const dex = el("p", "muted");
     dex.textContent = `#${detail.id} · Base stat total ${detail.bst}`;
     titleWrap.append(title, dex);
@@ -562,8 +794,7 @@ async function showInfo(route) {
     for (const a of abilities) {
       const item = el("div", "ability");
       const name = el("div", "ability-name");
-      name.textContent =
-        displayName(a.name) + (a.hidden ? " (Hidden)" : "");
+      name.textContent = displayName(a.name) + (a.hidden ? " (Hidden)" : "");
       const eff = el("div", "ability-effect");
       eff.textContent = a.effect;
       item.append(name, eff);
@@ -578,167 +809,164 @@ async function showInfo(route) {
 }
 
 // ---- Evolve ----
-async function evolve(route) {
-  if (!route.pokemon_id) return;
+async function evolve(enc) {
+  if (!enc?.pokemon_id) return;
   try {
-    const detail = await getPokemonDetail(route.pokemon_id);
+    const detail = await getPokemonDetail(enc.pokemon_id);
     const opts = await getEvolutions(detail);
     if (!opts.length) {
-      toast(`${displayName(route.pokemon_name)} has no further evolution.`);
+      toast(`${displayName(enc.pokemon_name)} has no further evolution.`);
       return;
     }
-    if (opts.length === 1) {
-      await applyEvolution(route, opts[0]);
-      return;
-    }
-    // Branching evolution (e.g. Eevee) — let the user choose.
+    if (opts.length === 1) return applyEvolution(enc, opts[0]);
+
     const content = el("div", "evolve");
     const h = el("h3");
-    h.textContent = `Evolve ${displayName(route.pokemon_name)} into…`;
+    h.textContent = `Evolve ${displayName(enc.pokemon_name)} into…`;
     const grid = el("div", "evolve-options");
     for (const o of opts) {
       const btn = el("button", "evolve-option");
+      btn.type = "button";
       const box = el("div", "sprite-box");
       renderSprite(box, spriteUrl(o.id));
       const name = el("span");
       name.textContent = o.display;
       btn.append(box, name);
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", () => {
         closeModal();
-        await applyEvolution(route, o);
+        applyEvolution(enc, o);
       });
       grid.appendChild(btn);
     }
     content.append(h, grid);
     openModal(content);
-  } catch (err) {
+  } catch {
     toast("Couldn't load evolution data.");
   }
 }
 
-async function applyEvolution(route, entry) {
-  await patchRoute(route, {
+async function applyEvolution(enc, entry) {
+  await patchEncounter(enc, {
     pokemon_id: entry.id,
     pokemon_name: entry.apiName,
     sprite_url: spriteUrl(entry.id),
   });
-  replaceRow(route);
   toast(`Evolved into ${entry.display}!`);
 }
 
-function renderSprite(box, url) {
-  box.innerHTML = "";
-  if (url) {
-    box.classList.remove("empty");
-    const img = document.createElement("img");
-    img.src = url;
-    img.alt = "";
-    img.loading = "lazy";
-    img.addEventListener("error", () => {
-      box.classList.add("empty");
-      img.remove();
-    });
-    box.appendChild(img);
-  } else {
-    box.classList.add("empty");
-  }
-}
-
-/** PUT a partial update, refresh local state + row styling + sidebar tally. */
-async function patchRoute(route, fields) {
-  try {
-    const updated = await api(`/api/routes/${route.id}`, {
-      method: "PUT",
-      body: JSON.stringify(fields),
-    });
-    Object.assign(route, updated);
-    const tr = routesBody.querySelector(`tr[data-id="${route.id}"]`);
-    if (tr) {
-      if (route.status) tr.dataset.status = route.status;
-      else delete tr.dataset.status;
-      const sel = tr.querySelector("select.status");
-      if (sel) {
-        sel.value = route.status || "";
-        sel.dataset.status = route.status || "";
-      }
+// ---- New run modal ----
+function openNewRunModal() {
+  const form = el("form", "run-form");
+  form.innerHTML = `
+    <h3>New run</h3>
+    <label>Name<input name="name" autocomplete="off" required></label>
+    <label>Game <span class="muted">(optional)</span><input name="game" autocomplete="off"></label>
+    <fieldset class="mode-field">
+      <legend>Mode</legend>
+      <label class="radio"><input type="radio" name="mode" value="normal" checked> Normal (solo)</label>
+      <label class="radio"><input type="radio" name="mode" value="soullink"> 🔗 Soullink (2 players, linked)</label>
+    </fieldset>
+    <div class="soullink-fields" hidden>
+      <label>Player 1<input name="player1" placeholder="Player 1" autocomplete="off"></label>
+      <label>Player 2<input name="player2" placeholder="Player 2" autocomplete="off"></label>
+    </div>
+    <label>Password <span class="muted">(optional — protects the session)</span>
+      <input name="password" type="password" autocomplete="new-password"></label>
+    <button type="submit" class="btn primary">Create run</button>
+  `;
+  form.querySelectorAll('input[name="mode"]').forEach((r) =>
+    r.addEventListener("change", () => {
+      form.querySelector(".soullink-fields").hidden =
+        form.querySelector('input[name="mode"]:checked').value !== "soullink";
+    }),
+  );
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const name = String(fd.get("name") || "").trim();
+    if (!name) return;
+    try {
+      const run = await api("/api/runs", {
+        method: "POST",
+        body: JSON.stringify({
+          name,
+          game: String(fd.get("game") || "").trim(),
+          mode: fd.get("mode") || "normal",
+          player1: String(fd.get("player1") || "").trim(),
+          player2: String(fd.get("player2") || "").trim(),
+          password: String(fd.get("password") || ""),
+        }),
+      });
+      if (run.token) setToken(run.id, run.token);
+      closeModal();
+      await loadRuns();
+      await selectRun(run.id);
+    } catch (err) {
+      toast(err.message);
     }
-    refreshTally();
-  } catch (err) {
-    toast(err.message);
-  }
-}
-
-/** Recompute the active run's tallies from local routes, update the sidebar. */
-function refreshTally() {
-  const run = runs.find((r) => r.id === activeRunId);
-  if (!run) return;
-  run.routes = routes.length;
-  run.caught = routes.filter((r) => r.status === "caught").length;
-  run.boxed = routes.filter((r) => r.status === "boxed").length;
-  run.fainted = routes.filter((r) => r.status === "fainted").length;
-  run.missed = routes.filter((r) => r.status === "missed").length;
-  renderRuns();
-  runSubtitle.textContent =
-    (run.game ? `${run.game} · ` : "") + `${run.routes} routes`;
-}
-
-// ---- Small element helpers ----
-function el(tag, className) {
-  const e = document.createElement(tag);
-  if (className) e.className = className;
-  return e;
-}
-function input(value, placeholder) {
-  const i = document.createElement("input");
-  i.type = "text";
-  i.value = value;
-  i.placeholder = placeholder || "";
-  i.autocomplete = "off";
-  return i;
+  });
+  openModal(form);
+  form.querySelector('input[name="name"]').focus();
 }
 
 // ---- Top-level actions ----
-$("#new-run-btn").addEventListener("click", async () => {
-  const name = prompt("Name this run (e.g. FireRed Nuzlocke #1):");
-  if (!name || !name.trim()) return;
-  const game = prompt("Game? (optional, e.g. FireRed) — leave blank to skip:") || "";
-  const run = await api("/api/runs", {
-    method: "POST",
-    body: JSON.stringify({ name: name.trim(), game: game.trim() }),
-  });
-  await loadRuns();
-  await selectRun(run.id);
-});
+$("#new-run-btn").addEventListener("click", openNewRunModal);
 
 $("#delete-run-btn").addEventListener("click", async () => {
   const run = runs.find((r) => r.id === activeRunId);
   if (!run) return;
   if (!confirm(`Delete "${run.name}" and all its routes? This cannot be undone.`))
     return;
-  await api(`/api/runs/${run.id}`, { method: "DELETE" });
-  activeRunId = null;
-  localStorage.removeItem(ACTIVE_RUN_KEY);
-  await loadRuns();
+  try {
+    await api(`/api/runs/${run.id}`, { method: "DELETE", headers: runHeaders() });
+    activeRunId = null;
+    localStorage.removeItem(ACTIVE_RUN_KEY);
+    await loadRuns();
+  } catch (err) {
+    toast(err.message);
+  }
 });
 
 $("#add-route-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const inputEl = $("#route-name-input");
-  const name = inputEl.value.trim();
+  const inp = $("#route-name-input");
+  const name = inp.value.trim();
   if (!name || !activeRunId) return;
-  const route = await api(`/api/runs/${activeRunId}/routes`, {
-    method: "POST",
-    body: JSON.stringify({ name }),
-  });
-  routes.push(route);
-  routesBody.appendChild(routeRow(route));
-  inputEl.value = "";
-  inputEl.focus();
-  refreshTally();
+  try {
+    const route = await api(`/api/runs/${activeRunId}/routes`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+      headers: runHeaders(),
+    });
+    routes.push(route);
+    renderRoutes(runs.find((r) => r.id === activeRunId));
+    inp.value = "";
+    inp.focus();
+    refreshSidebar();
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$("#unlock-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pw = $("#unlock-input").value;
+  try {
+    const res = await api(`/api/runs/${activeRunId}/unlock`, {
+      method: "POST",
+      body: JSON.stringify({ password: pw }),
+    });
+    if (res.token) setToken(activeRunId, res.token);
+    $("#unlock-input").value = "";
+    await loadActiveRun();
+  } catch {
+    toast("Wrong password");
+  }
 });
 
 // ---- Boot ----
 (async () => {
   await loadPokedex();
   await loadRuns();
+  connectWS();
 })();
