@@ -680,6 +680,10 @@ tr[data-status="missed"],
   flex-direction: column;
   gap: 12px;
 }
+/* `display: flex` above would otherwise override the [hidden] attribute. */
+.soullink-fields[hidden] {
+  display: none;
+}
 .run-form .btn {
   align-self: flex-start;
 }
