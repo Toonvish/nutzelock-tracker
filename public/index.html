@@ -12,7 +12,6 @@
         <div class="sidebar-head">
           <h1>🎮 Nuzlocke</h1>
           <button id="new-run-btn" class="btn primary">+ New run</button>
-          <button id="type-chart-btn" class="btn">⚡ Type chart</button>
         </div>
         <ul id="run-list" class="run-list"></ul>
       </aside>
@@ -71,6 +70,19 @@
                 />
                 <button type="submit" class="btn">+ Add</button>
               </form>
+            </details>
+
+            <details id="type-chart-section" class="caps">
+              <summary>⚡ Type chart</summary>
+              <div class="tc-controls">
+                <label>Generation
+                  <select id="type-gen-select"></select>
+                </label>
+              </div>
+              <p class="muted tc-note">
+                Rows attack, columns defend. 2× super-effective, ½ resisted, 0 no effect.
+              </p>
+              <div id="type-grid" class="tc-grid"></div>
             </details>
 
             <form id="add-route-form" class="add-route">

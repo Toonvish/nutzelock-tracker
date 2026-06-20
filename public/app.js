@@ -1168,12 +1168,11 @@ function renderTypeGrid(container, genNum) {
   container.appendChild(table);
 }
 
-async function openTypeChart() {
-  const content = el("div", "type-chart-modal");
-  const controls = el("div", "tc-controls");
-  const h = el("h3");
-  h.textContent = "Type effectiveness";
-  const sel = el("select");
+/** Wire the run-page "Type chart" accordion; loads PokeAPI data on first open. */
+function setupTypeChart() {
+  const details = $("#type-chart-section");
+  const sel = $("#type-gen-select");
+  const grid = $("#type-grid");
   for (let g = 1; g <= 9; g++) {
     const o = el("option");
     o.value = String(g);
@@ -1181,24 +1180,26 @@ async function openTypeChart() {
     sel.appendChild(o);
   }
   sel.value = "9";
-  controls.append(h, sel);
-  const note = el("p", "muted tc-note");
-  note.textContent =
-    "Rows attack, columns defend. 2× super-effective, ½ resisted, 0 no effect.";
-  const grid = el("div", "tc-grid");
-  grid.innerHTML = `<p class="muted">Loading type data…</p>`;
-  content.append(controls, note, grid);
-  const modal = openModal(content);
-  modal.classList.add("modal-wide");
-  try {
-    await loadTypeInfos();
-  } catch {
-    grid.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
-    return;
-  }
+
+  let loaded = false;
   const draw = () => renderTypeGrid(grid, Number(sel.value));
-  sel.addEventListener("change", draw);
-  draw();
+  const ensure = async () => {
+    if (loaded) return draw();
+    grid.innerHTML = `<p class="muted">Loading type data…</p>`;
+    try {
+      await loadTypeInfos();
+      loaded = true;
+      draw();
+    } catch {
+      grid.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
+    }
+  };
+  details.addEventListener("toggle", () => {
+    if (details.open) ensure();
+  });
+  sel.addEventListener("change", () => {
+    if (loaded) draw();
+  });
 }
 
 // ---- New run modal ----
@@ -1258,7 +1259,7 @@ function openNewRunModal() {
 
 // ---- Top-level actions ----
 $("#new-run-btn").addEventListener("click", openNewRunModal);
-$("#type-chart-btn").addEventListener("click", openTypeChart);
+setupTypeChart();
 
 $("#add-cap-form").addEventListener("submit", async (e) => {
   e.preventDefault();
