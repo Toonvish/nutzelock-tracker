@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nuzlocke Tracker</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <div class="sidebar-head">
+          <h1>🎮 Nuzlocke</h1>
+          <button id="new-run-btn" class="btn primary">+ New run</button>
+        </div>
+        <ul id="run-list" class="run-list"></ul>
+      </aside>
+
+      <main id="main">
+        <div id="empty-state">
+          <p>No run selected.</p>
+          <p class="muted">Create a run on the left to start tracking encounters.</p>
+        </div>
+
+        <section id="run-view" hidden>
+          <header class="run-header">
+            <div>
+              <h2 id="run-title"></h2>
+              <p id="run-subtitle" class="muted"></p>
+            </div>
+            <button id="delete-run-btn" class="btn danger">Delete run</button>
+          </header>
+
+          <form id="add-route-form" class="add-route">
+            <input
+              id="route-name-input"
+              type="text"
+              placeholder="Add a route (e.g. Route 1, Viridian Forest)…"
+              autocomplete="off"
+            />
+            <button type="submit" class="btn primary">+ Add route</button>
+          </form>
+
+          <div class="table-wrap">
+            <table id="routes-table">
+              <thead>
+                <tr>
+                  <th class="col-route">Route</th>
+                  <th class="col-sprite"></th>
+                  <th class="col-pokemon">Pokémon</th>
+                  <th class="col-nick">Nickname</th>
+                  <th class="col-status">Status</th>
+                  <th class="col-actions"></th>
+                </tr>
+              </thead>
+              <tbody id="routes-body"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

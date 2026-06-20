@@ -1,0 +1,526 @@
+:root {
+  --bg: #0f1117;
+  --panel: #181b24;
+  --panel-2: #1f2330;
+  --border: #2a2f3d;
+  --text: #e7e9ee;
+  --muted: #8b91a3;
+  --primary: #e3350d; /* Poké Ball red */
+  --primary-d: #b62809;
+  --accent: #3b6cff;
+  --green: #3fb950;
+  --blue: #4a9eff;
+  --red: #f0556a;
+  --gray: #6b7280;
+  --radius: 10px;
+  font-size: 15px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ---- Sidebar ---- */
+#sidebar {
+  width: 270px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sidebar-head h1 {
+  font-size: 1.2rem;
+  margin: 0 0 12px;
+}
+
+.run-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.run-item {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.run-item:hover {
+  border-color: var(--accent);
+}
+
+.run-item.active {
+  border-color: var(--primary);
+  background: #241a1c;
+}
+
+.run-item .run-name {
+  font-weight: 600;
+}
+
+.run-item .run-tally {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+/* ---- Main ---- */
+#main {
+  flex: 1;
+  padding: 26px 30px;
+  overflow-x: auto;
+}
+
+#empty-state {
+  margin-top: 18vh;
+  text-align: center;
+}
+
+.run-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.run-header h2 {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.add-route {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+
+.add-route input {
+  flex: 1;
+}
+
+/* ---- Inputs & buttons ---- */
+input,
+select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 0.95rem;
+  font-family: inherit;
+}
+
+input:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 9px 14px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.btn.primary:hover {
+  background: var(--primary-d);
+  border-color: var(--primary-d);
+}
+
+.btn.danger {
+  color: var(--red);
+  border-color: transparent;
+  background: transparent;
+}
+
+.btn.danger:hover {
+  background: #2a1a1d;
+  border-color: var(--red);
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.icon-btn.del:hover {
+  color: var(--red);
+  background: #2a1a1d;
+}
+
+.icon-btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.icon-btn:disabled:hover {
+  color: var(--muted);
+  background: transparent;
+}
+
+/* ---- Routes table ---- */
+.table-wrap {
+  overflow-x: auto;
+}
+
+#routes-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#routes-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0 10px 8px;
+}
+
+#routes-table td {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.col-sprite {
+  width: 56px;
+}
+
+.col-status {
+  width: 130px;
+}
+
+.col-actions {
+  width: 116px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+#routes-table tbody tr {
+  transition: opacity 0.12s;
+}
+
+.route-name-cell input,
+.pokemon-cell input,
+.nick-cell input {
+  width: 100%;
+  min-width: 110px;
+}
+
+.sprite-box {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.sprite-box img {
+  width: 46px;
+  height: 46px;
+  image-rendering: pixelated;
+  object-fit: contain;
+}
+
+.sprite-box.empty::after {
+  content: "?";
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* ---- Pokémon picker (custom combobox with sprite thumbnails) ---- */
+.combo {
+  position: relative;
+}
+
+.combo-list {
+  position: fixed;
+  z-index: 50;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.combo-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.combo-item.active,
+.combo-item:hover {
+  background: var(--bg);
+}
+
+.combo-sprite {
+  width: 40px;
+  height: 40px;
+  image-rendering: pixelated;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.combo-id {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding-left: 12px;
+}
+
+/* Status select coloring */
+select.status {
+  width: 100%;
+  font-weight: 600;
+}
+
+select.status[data-status="caught"] {
+  color: var(--green);
+}
+select.status[data-status="boxed"] {
+  color: var(--blue);
+}
+select.status[data-status="fainted"] {
+  color: var(--red);
+}
+select.status[data-status="missed"] {
+  color: var(--gray);
+}
+
+/* Row dimming by status */
+tr[data-status="fainted"] {
+  opacity: 0.6;
+}
+tr[data-status="fainted"] .pokemon-cell input,
+tr[data-status="fainted"] .nick-cell input {
+  text-decoration: line-through;
+}
+tr[data-status="missed"] {
+  opacity: 0.45;
+}
+
+.toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--red);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+}
+
+/* ---- Modal (info + evolve chooser) ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 80;
+  padding: 20px;
+}
+
+.modal {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px;
+  width: 440px;
+  max-width: 100%;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+}
+
+.modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+}
+
+.info-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.info-head h3 {
+  margin: 0;
+}
+
+.info-head .muted {
+  margin: 4px 0 0;
+}
+
+.info-head .sprite-box {
+  width: 72px;
+  height: 72px;
+}
+
+.info-head .sprite-box img {
+  width: 68px;
+  height: 68px;
+}
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: 40px 36px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.stat-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.stat-val {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-bar {
+  height: 8px;
+  background: var(--panel-2);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.stat-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 5px;
+}
+
+.modal h4 {
+  margin: 0 0 8px;
+}
+
+.abilities {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ability-name {
+  font-weight: 600;
+}
+
+.ability-effect {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.evolve h3 {
+  margin: 0 0 16px;
+}
+
+.evolve-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.evolve-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.evolve-option:hover {
+  border-color: var(--primary);
+}

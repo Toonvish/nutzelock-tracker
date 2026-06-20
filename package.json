@@ -1,0 +1,13 @@
+{
+  "name": "custom-nuzlocke-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts",
+    "build:pi": "bun build --compile --target=bun-linux-arm64 --minify src/server.ts --outfile dist/nuzlocke-pi",
+    "build:linux-x64": "bun build --compile --target=bun-linux-x64 --minify src/server.ts --outfile dist/nuzlocke-linux-x64",
+    "build:win": "bun build --compile --target=bun-windows-x64 --minify src/server.ts --outfile dist/nuzlocke-win.exe"
+  }
+}
