@@ -19,6 +19,11 @@ import {
   getRouteRunId,
   getEncounterRunId,
   updateEncounter,
+  listLevelCaps,
+  createLevelCap,
+  updateLevelCap,
+  deleteLevelCap,
+  getLevelCapRunId,
 } from "./db.ts";
 import type { Server, ServerWebSocket } from "bun";
 // Embed the frontend so `bun build --compile` yields a single executable.
@@ -53,6 +58,12 @@ function optStr(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
   return t === "" ? null : t;
+}
+
+/** Parse a level-cap value to an int in 1..100, or null. */
+function capLevel(v: unknown): number | null {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.min(100, Math.round(n)) : null;
 }
 
 /** Derive a unique "<base> #N" name for a cloned run. */
@@ -97,6 +108,9 @@ function broadcastRoutes(runId: number) {
 }
 function broadcastRuns() {
   server?.publish("runs", JSON.stringify({ type: "runs" }));
+}
+function broadcastCaps(runId: number) {
+  server?.publish(`run:${runId}`, JSON.stringify({ type: "caps", runId }));
 }
 
 interface WsData {
@@ -186,6 +200,48 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       broadcastRuns();
       return json(route, 201);
     }
+  }
+
+  // --- Level caps of a run ---
+  if (path.startsWith("/api/runs/") && path.endsWith("/level-caps")) {
+    const id = idFromPath("/api/runs/");
+    const run = getRun(id);
+    const denied = authGuard(run, token);
+    if (denied) return denied;
+    if (method === "GET") return json(listLevelCaps(id));
+    if (method === "POST") {
+      const b = await body();
+      const name = String(b.name ?? "").trim();
+      if (!name) return bad("name required");
+      const cap = createLevelCap(id, name, capLevel(b.level));
+      broadcastCaps(id);
+      return json(cap, 201);
+    }
+  }
+
+  // --- Level cap update / delete ---
+  if (path.startsWith("/api/level-caps/") && (method === "PUT" || method === "DELETE")) {
+    const id = idFromPath("/api/level-caps/");
+    const runId = getLevelCapRunId(id);
+    const denied = authGuard(runId ? getRun(runId) : null, token);
+    if (denied) return denied;
+    if (method === "PUT") {
+      const b = await body();
+      const fields: Parameters<typeof updateLevelCap>[1] = {};
+      if ("name" in b) {
+        const name = String(b.name ?? "").trim();
+        if (!name) return bad("name cannot be empty");
+        fields.name = name;
+      }
+      if ("level" in b) fields.level = capLevel(b.level);
+      if ("cleared" in b) fields.cleared = b.cleared ? 1 : 0;
+      const row = updateLevelCap(id, fields);
+      if (runId) broadcastCaps(runId);
+      return row ? json(row) : bad("not found", 404);
+    }
+    deleteLevelCap(id);
+    if (runId) broadcastCaps(runId);
+    return json({ ok: true });
   }
 
   // --- Run rename / delete ---

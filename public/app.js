@@ -16,6 +16,25 @@ const STATUS_COLORS = {
   missed: "var(--gray)",
   bro_failed: "var(--bro)",
 };
+const TYPE_CHART_KEY = "nuzlocke.typechart.v1";
+const TYPE_NAMES = [
+  "normal", "fire", "water", "electric", "grass", "ice", "fighting", "poison",
+  "ground", "flying", "psychic", "bug", "rock", "ghost", "dragon", "dark",
+  "steel", "fairy",
+];
+const GEN_ORDER = [
+  "generation-i", "generation-ii", "generation-iii", "generation-iv",
+  "generation-v", "generation-vi", "generation-vii", "generation-viii",
+  "generation-ix",
+];
+const GEN_LABELS = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"];
+const TYPE_COLORS = {
+  normal: "#9fa19f", fire: "#e62829", water: "#2980ef", electric: "#fac000",
+  grass: "#3fa129", ice: "#3dcef3", fighting: "#ff8000", poison: "#9141cb",
+  ground: "#915121", flying: "#81b9ef", psychic: "#ef4179", bug: "#91a119",
+  rock: "#afa981", ghost: "#704170", dragon: "#5060e1", dark: "#624d4e",
+  steel: "#60a1b8", fairy: "#ef70ef",
+};
 const ACTIVE_RUN_KEY = "nuzlocke.activeRun";
 const TOKENS_KEY = "nuzlocke.tokens";
 const POKEDEX_KEY = "nuzlocke.pokedex.v1";
@@ -46,6 +65,7 @@ const routesArea = $("#routes-area");
 let runs = [];
 let activeRunId = Number(localStorage.getItem(ACTIVE_RUN_KEY)) || null;
 let routes = [];
+let levelCaps = [];
 let pokedex = new Map(); // display(lower) -> { id, apiName, display }
 let pokedexList = [];
 let ws = null;
@@ -352,6 +372,7 @@ function connectWS() {
     }
     if (m.type === "runs") refreshSidebar();
     else if (m.type === "routes" && m.runId === activeRunId) refreshRoutes();
+    else if (m.type === "caps" && m.runId === activeRunId) loadCaps();
     else if (m.type === "denied" && m.runId === activeRunId) {
       delete tokens[activeRunId];
       saveTokens();
@@ -436,6 +457,79 @@ async function loadActiveRun() {
   $("#routes-section").hidden = false;
   watchRun(run.id);
   await loadRoutesData();
+  loadCaps();
+}
+
+// ---- Level caps ----
+async function loadCaps() {
+  if (!activeRunId) return;
+  try {
+    levelCaps = await api(`/api/runs/${activeRunId}/level-caps`, {
+      headers: runHeaders(),
+    });
+  } catch {
+    levelCaps = [];
+  }
+  renderCaps();
+}
+
+function renderCaps() {
+  const list = $("#caps-list");
+  list.innerHTML = "";
+  if (!levelCaps.length) {
+    const empty = el("span", "caps-empty muted");
+    empty.textContent = "No level caps yet — add gym leaders, Elite Four, etc.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const cap of levelCaps) list.appendChild(buildCapChip(cap));
+}
+
+function buildCapChip(cap) {
+  const chip = el("div", "cap-chip" + (cap.cleared ? " cleared" : ""));
+  const name = el("span", "cap-name");
+  name.textContent = cap.name;
+  const lv = el("span", "cap-lv");
+  lv.textContent = cap.level != null ? `Lv ${cap.level}` : "—";
+  const del = el("button", "cap-del");
+  del.type = "button";
+  del.textContent = "×";
+  del.title = "Remove";
+  del.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteCap(cap);
+  });
+  chip.append(name, lv, del);
+  chip.title = cap.cleared ? "Cleared — click to unmark" : "Click to mark cleared";
+  chip.addEventListener("click", () => toggleCap(cap));
+  return chip;
+}
+
+async function toggleCap(cap) {
+  try {
+    const updated = await api(`/api/level-caps/${cap.id}`, {
+      method: "PUT",
+      body: JSON.stringify({ cleared: !cap.cleared }),
+      headers: runHeaders(),
+    });
+    Object.assign(cap, updated);
+    renderCaps();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function deleteCap(cap) {
+  try {
+    await api(`/api/level-caps/${cap.id}`, {
+      method: "DELETE",
+      headers: runHeaders(),
+    });
+    levelCaps = levelCaps.filter((c) => c.id !== cap.id);
+    renderCaps();
+  } catch (err) {
+    toast(err.message);
+  }
 }
 
 async function loadRoutesData() {
@@ -947,6 +1041,166 @@ async function applyEvolution(enc, entry) {
   toast(`Evolved into ${entry.display}!`);
 }
 
+// ---- Type effectiveness chart (per generation, from PokeAPI) ----
+let typeInfos = null;
+
+/** Fetch the 18 types once, reduced to a compact per-gen-aware form (cached). */
+async function loadTypeInfos() {
+  if (typeInfos) return typeInfos;
+  try {
+    const cached = localStorage.getItem(TYPE_CHART_KEY);
+    if (cached) {
+      typeInfos = JSON.parse(cached);
+      return typeInfos;
+    }
+  } catch {
+    /* ignore */
+  }
+  const compact = (r) => ({
+    to2: r.double_damage_to.map((t) => t.name),
+    to05: r.half_damage_to.map((t) => t.name),
+    to0: r.no_damage_to.map((t) => t.name),
+  });
+  typeInfos = await Promise.all(
+    TYPE_NAMES.map(async (name) => {
+      const d = await api(`${POKEAPI}/type/${name}`);
+      return {
+        name,
+        gen: d.generation.name,
+        rel: compact(d.damage_relations),
+        past: (d.past_damage_relations || []).map((p) => ({
+          gen: p.generation.name,
+          ...compact(p.damage_relations),
+        })),
+      };
+    }),
+  );
+  try {
+    localStorage.setItem(TYPE_CHART_KEY, JSON.stringify(typeInfos));
+  } catch {
+    /* quota — fine, memory cache stands */
+  }
+  return typeInfos;
+}
+
+/** Build { types, chart[atk][def] = multiplier } for a generation number. */
+function buildTypeChart(genNum) {
+  const gIdx = genNum - 1;
+  const gi = (name) => GEN_ORDER.indexOf(name);
+  const types = typeInfos.filter((i) => gi(i.gen) <= gIdx).map((i) => i.name);
+  const present = new Set(types);
+  const chart = {};
+  for (const info of typeInfos) {
+    if (!present.has(info.name)) continue;
+    // Pick the damage relations in effect for this gen: the earliest "past"
+    // entry whose generation is >= the target gen, else the current relations.
+    let rel = info.rel;
+    const past = info.past
+      .map((p) => ({ gi: gi(p.gen), p }))
+      .filter((x) => x.gi >= 0)
+      .sort((a, b) => a.gi - b.gi);
+    for (const x of past) {
+      if (gIdx <= x.gi) {
+        rel = x.p;
+        break;
+      }
+    }
+    const row = {};
+    for (const d of types) row[d] = 1;
+    for (const t of rel.to2) if (present.has(t)) row[t] = 2;
+    for (const t of rel.to05) if (present.has(t)) row[t] = 0.5;
+    for (const t of rel.to0) if (present.has(t)) row[t] = 0;
+    chart[info.name] = row;
+  }
+  return { types, chart };
+}
+
+const capitalize = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function renderTypeGrid(container, genNum) {
+  const { types, chart } = buildTypeChart(genNum);
+  const abbr = (t) => t.slice(0, 3).toUpperCase();
+  const table = el("table", "type-chart");
+
+  const thead = el("thead");
+  const htr = el("tr");
+  const corner = el("th", "tc-corner");
+  corner.textContent = "ATK ＼ DEF";
+  htr.appendChild(corner);
+  for (const d of types) {
+    const th = el("th", "tc-head");
+    th.textContent = abbr(d);
+    th.style.background = TYPE_COLORS[d];
+    th.title = capitalize(d);
+    htr.appendChild(th);
+  }
+  thead.appendChild(htr);
+  table.appendChild(thead);
+
+  const tbody = el("tbody");
+  for (const a of types) {
+    const tr = el("tr");
+    const rh = el("th", "tc-row");
+    rh.textContent = abbr(a);
+    rh.style.background = TYPE_COLORS[a];
+    rh.title = capitalize(a);
+    tr.appendChild(rh);
+    for (const d of types) {
+      const m = chart[a][d];
+      const td = el("td", "tc-cell");
+      if (m === 2) {
+        td.classList.add("eff-super");
+        td.textContent = "2×";
+      } else if (m === 0.5) {
+        td.classList.add("eff-weak");
+        td.textContent = "½";
+      } else if (m === 0) {
+        td.classList.add("eff-none");
+        td.textContent = "0";
+      }
+      td.title = `${capitalize(a)} → ${capitalize(d)}: ${m}×`;
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  container.innerHTML = "";
+  container.appendChild(table);
+}
+
+async function openTypeChart() {
+  const content = el("div", "type-chart-modal");
+  const controls = el("div", "tc-controls");
+  const h = el("h3");
+  h.textContent = "Type effectiveness";
+  const sel = el("select");
+  for (let g = 1; g <= 9; g++) {
+    const o = el("option");
+    o.value = String(g);
+    o.textContent = `Gen ${GEN_LABELS[g - 1]}`;
+    sel.appendChild(o);
+  }
+  sel.value = "9";
+  controls.append(h, sel);
+  const note = el("p", "muted tc-note");
+  note.textContent =
+    "Rows attack, columns defend. 2× super-effective, ½ resisted, 0 no effect.";
+  const grid = el("div", "tc-grid");
+  grid.innerHTML = `<p class="muted">Loading type data…</p>`;
+  content.append(controls, note, grid);
+  const modal = openModal(content);
+  modal.classList.add("modal-wide");
+  try {
+    await loadTypeInfos();
+  } catch {
+    grid.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
+    return;
+  }
+  const draw = () => renderTypeGrid(grid, Number(sel.value));
+  sel.addEventListener("change", draw);
+  draw();
+}
+
 // ---- New run modal ----
 function openNewRunModal() {
   const form = el("form", "run-form");
@@ -1004,6 +1258,32 @@ function openNewRunModal() {
 
 // ---- Top-level actions ----
 $("#new-run-btn").addEventListener("click", openNewRunModal);
+$("#type-chart-btn").addEventListener("click", openTypeChart);
+
+$("#add-cap-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const nameEl = $("#cap-name-input");
+  const lvEl = $("#cap-level-input");
+  const name = nameEl.value.trim();
+  if (!name || !activeRunId) return;
+  try {
+    const cap = await api(`/api/runs/${activeRunId}/level-caps`, {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        level: lvEl.value === "" ? null : Number(lvEl.value),
+      }),
+      headers: runHeaders(),
+    });
+    levelCaps.push(cap);
+    renderCaps();
+    nameEl.value = "";
+    lvEl.value = "";
+    nameEl.focus();
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 $("#clone-run-btn").addEventListener("click", async () => {
   const run = runs.find((r) => r.id === activeRunId);

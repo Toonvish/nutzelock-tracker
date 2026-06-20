@@ -12,6 +12,7 @@
         <div class="sidebar-head">
           <h1>🎮 Nuzlocke</h1>
           <button id="new-run-btn" class="btn primary">+ New run</button>
+          <button id="type-chart-btn" class="btn">⚡ Type chart</button>
         </div>
         <ul id="run-list" class="run-list"></ul>
       </aside>
@@ -51,6 +52,27 @@
           </div>
 
           <div id="routes-section">
+            <details id="caps-section" class="caps" open>
+              <summary>Level caps</summary>
+              <div id="caps-list" class="caps-list"></div>
+              <form id="add-cap-form" class="add-cap">
+                <input
+                  id="cap-name-input"
+                  type="text"
+                  placeholder="e.g. Brock, Elite Four Lance"
+                  autocomplete="off"
+                />
+                <input
+                  id="cap-level-input"
+                  type="number"
+                  min="1"
+                  max="100"
+                  placeholder="Lv"
+                />
+                <button type="submit" class="btn">+ Add</button>
+              </form>
+            </details>
+
             <form id="add-route-form" class="add-route">
               <input
                 id="route-name-input"

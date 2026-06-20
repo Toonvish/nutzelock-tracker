@@ -80,8 +80,19 @@ function migrate(db: Database) {
       UNIQUE(route_id, slot)
     );
 
+    CREATE TABLE IF NOT EXISTS level_caps (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id     INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      name       TEXT NOT NULL,
+      level      INTEGER,
+      position   INTEGER NOT NULL DEFAULT 0,
+      cleared    INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_routes_run ON routes(run_id);
     CREATE INDEX IF NOT EXISTS idx_encounters_route ON encounters(route_id);
+    CREATE INDEX IF NOT EXISTS idx_caps_run ON level_caps(run_id);
   `);
 
   // Upgrade older `runs` tables created before soullink/password existed.
@@ -251,7 +262,15 @@ export function cloneRun(sourceId: number, newName: string): RunRow | null {
   const insEnc = db.query(
     "INSERT INTO encounters (route_id, slot) VALUES ($rid, $slot)",
   );
-  const copyRoutes = db.transaction(() => {
+  const srcCaps = db
+    .query(
+      "SELECT name, level, position FROM level_caps WHERE run_id = ? ORDER BY position, id",
+    )
+    .all(sourceId) as { name: string; level: number | null; position: number }[];
+  const insCap = db.query(
+    "INSERT INTO level_caps (run_id, name, level, position) VALUES ($r, $n, $l, $p)",
+  );
+  const copy = db.transaction(() => {
     for (const rt of srcRoutes) {
       const nr = insRoute.get({
         $r: run.id,
@@ -260,9 +279,78 @@ export function cloneRun(sourceId: number, newName: string): RunRow | null {
       }) as { id: number };
       for (const slot of slots) insEnc.run({ $rid: nr.id, $slot: slot });
     }
+    // Carry over the level caps, but reset "cleared" for the fresh run.
+    for (const c of srcCaps)
+      insCap.run({ $r: run.id, $n: c.name, $l: c.level, $p: c.position });
   });
-  copyRoutes();
+  copy();
   return run;
+}
+
+// ---- Level caps --------------------------------------------------------
+
+export interface LevelCapRow {
+  id: number;
+  run_id: number;
+  name: string;
+  level: number | null;
+  position: number;
+  cleared: number;
+  created_at: string;
+}
+
+export function listLevelCaps(runId: number): LevelCapRow[] {
+  return getDb()
+    .query("SELECT * FROM level_caps WHERE run_id = ? ORDER BY position, id")
+    .all(runId) as LevelCapRow[];
+}
+
+export function createLevelCap(
+  runId: number,
+  name: string,
+  level: number | null,
+): LevelCapRow {
+  const next = getDb()
+    .query(
+      "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM level_caps WHERE run_id = ?",
+    )
+    .get(runId) as { pos: number };
+  return getDb()
+    .query(
+      `INSERT INTO level_caps (run_id, name, level, position)
+       VALUES ($r, $n, $l, $p) RETURNING *`,
+    )
+    .get({ $r: runId, $n: name, $l: level, $p: next.pos }) as LevelCapRow;
+}
+
+export function updateLevelCap(
+  id: number,
+  fields: { name?: string; level?: number | null; cleared?: number },
+): LevelCapRow | null {
+  const sets: string[] = [];
+  const params: Record<string, unknown> = { $id: id };
+  for (const key of ["name", "level", "cleared"] as const) {
+    if (key in fields) {
+      sets.push(`${key} = $${key}`);
+      params[`$${key}`] = fields[key] ?? null;
+    }
+  }
+  if (!sets.length)
+    return (getDb().query("SELECT * FROM level_caps WHERE id = ?").get(id) as LevelCapRow) ?? null;
+  return getDb()
+    .query(`UPDATE level_caps SET ${sets.join(", ")} WHERE id = $id RETURNING *`)
+    .get(params) as LevelCapRow | null;
+}
+
+export function deleteLevelCap(id: number): void {
+  getDb().query("DELETE FROM level_caps WHERE id = ?").run(id);
+}
+
+export function getLevelCapRunId(id: number): number | null {
+  const r = getDb()
+    .query("SELECT run_id FROM level_caps WHERE id = ?")
+    .get(id) as { run_id: number } | null;
+  return r?.run_id ?? null;
 }
 
 // ---- Routes + encounters ----------------------------------------------
