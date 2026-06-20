@@ -30,6 +30,7 @@ import type { Server, ServerWebSocket } from "bun";
 import indexHtml from "../public/index.html" with { type: "file" };
 import appJs from "../public/app.js" with { type: "file" };
 import stylesCss from "../public/styles.css" with { type: "file" };
+import faviconSvg from "../public/favicon.svg" with { type: "file" };
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -38,6 +39,7 @@ const ASSETS: Record<string, { path: string; type: string }> = {
   "/index.html": { path: indexHtml, type: "text/html; charset=utf-8" },
   "/app.js": { path: appJs, type: "text/javascript; charset=utf-8" },
   "/styles.css": { path: stylesCss, type: "text/css; charset=utf-8" },
+  "/favicon.svg": { path: faviconSvg, type: "image/svg+xml" },
 };
 
 const json = (data: unknown, status = 200) =>

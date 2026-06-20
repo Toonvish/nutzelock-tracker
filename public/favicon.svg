@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Poké Ball">
+  <defs>
+    <clipPath id="ball"><circle cx="32" cy="32" r="29"/></clipPath>
+  </defs>
+  <g clip-path="url(#ball)">
+    <rect x="0" y="0" width="64" height="32" fill="#e3350d"/>
+    <rect x="0" y="32" width="64" height="32" fill="#f1f2f4"/>
+    <rect x="0" y="27" width="64" height="10" fill="#15171e"/>
+  </g>
+  <circle cx="32" cy="32" r="29" fill="none" stroke="#15171e" stroke-width="4"/>
+  <circle cx="32" cy="32" r="10" fill="#f1f2f4" stroke="#15171e" stroke-width="4"/>
+  <circle cx="32" cy="32" r="3.5" fill="#ffffff" stroke="#15171e" stroke-width="1.5"/>
+</svg>

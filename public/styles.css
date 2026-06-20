@@ -48,6 +48,13 @@ body {
 .sidebar-head h1 {
   font-size: 1.2rem;
   margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-head h1 .logo {
+  width: 24px;
+  height: 24px;
 }
 
 .run-list {
