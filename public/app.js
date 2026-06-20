@@ -1366,22 +1366,18 @@ function setupMatchup() {
   const t2 = $("#mu-type2");
   const result = $("#matchup-result");
 
-  for (const t of TYPE_NAMES) {
+  // Color each option by its own type (not the selected one).
+  const typeOption = (value, label) => {
     const o = el("option");
-    o.value = t;
-    o.textContent = capitalize(t);
-    t1.appendChild(o);
-  }
-  const none = el("option");
-  none.value = "";
-  none.textContent = "(none)";
-  t2.appendChild(none);
-  for (const t of TYPE_NAMES) {
-    const o = el("option");
-    o.value = t;
-    o.textContent = capitalize(t);
-    t2.appendChild(o.cloneNode(true));
-  }
+    o.value = value;
+    o.textContent = label;
+    o.style.color = value ? TYPE_COLORS[value] : "var(--muted)";
+    o.style.backgroundColor = "var(--panel-2)";
+    return o;
+  };
+  for (const t of TYPE_NAMES) t1.appendChild(typeOption(t, capitalize(t)));
+  t2.appendChild(typeOption("", "(none)"));
+  for (const t of TYPE_NAMES) t2.appendChild(typeOption(t, capitalize(t)));
   t1.value = "normal";
   t2.value = "";
   colorTypeSelect(t1);
