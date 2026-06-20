@@ -875,6 +875,7 @@ tr[data-status="missed"],
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+  margin-bottom: 4px;
 }
 .matchup-controls #matchup-picker {
   flex: 1 1 220px;
@@ -886,12 +887,12 @@ tr[data-status="missed"],
   min-width: 120px;
 }
 .matchup-result {
-  margin-top: 14px;
+  margin-top: 20px;
 }
 .matchup-groups {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 20px;
 }
 .mu-group-title {
   font-size: 0.78rem;
@@ -899,18 +900,18 @@ tr[data-status="missed"],
   letter-spacing: 0.05em;
   color: var(--muted);
   font-weight: 700;
-  margin-bottom: 6px;
+  margin-bottom: 10px;
 }
 .mu-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 .mu-chip {
   color: #fff;
   font-weight: 700;
   font-size: 0.82rem;
-  padding: 3px 11px;
+  padding: 5px 13px;
   border-radius: 999px;
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
 }
