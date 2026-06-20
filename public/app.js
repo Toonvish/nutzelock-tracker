@@ -128,6 +128,19 @@ function iconBtn(label, title, cls) {
   return b;
 }
 
+/** Toggle a password input's visibility from its adjacent eye button. */
+function wirePwToggle(btn) {
+  if (!btn) return;
+  const inp = btn.parentElement.querySelector("input");
+  btn.addEventListener("click", () => {
+    const show = inp.type === "password";
+    inp.type = show ? "text" : "password";
+    btn.textContent = show ? "🙈" : "👁";
+    btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    inp.focus();
+  });
+}
+
 const REGION_NAMES = {
   alola: "Alolan",
   galar: "Galarian",
@@ -1446,9 +1459,14 @@ function openNewRunModal() {
       <label>Player 2<input name="player2" placeholder="Player 2" autocomplete="off"></label>
     </div>
     <label>Password <span class="muted">(optional — protects the session)</span>
-      <input name="password" type="password" autocomplete="new-password"></label>
+      <span class="pw-field">
+        <input name="password" type="password" autocomplete="new-password">
+        <button type="button" class="pw-toggle" aria-label="Show password">👁</button>
+      </span>
+    </label>
     <button type="submit" class="btn primary">Create run</button>
   `;
+  wirePwToggle(form.querySelector(".pw-toggle"));
   form.querySelectorAll('input[name="mode"]').forEach((r) =>
     r.addEventListener("change", () => {
       form.querySelector(".soullink-fields").hidden =
@@ -1595,6 +1613,7 @@ $("#unlock-form").addEventListener("submit", async (e) => {
     toast("Wrong password");
   }
 });
+wirePwToggle($("#unlock-eye"));
 
 // ---- Boot ----
 (async () => {

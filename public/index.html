@@ -45,7 +45,10 @@
           <div id="locked-view" class="locked" hidden>
             <p>🔒 This session is password-protected.</p>
             <form id="unlock-form" class="unlock">
-              <input id="unlock-input" type="password" placeholder="Password" autocomplete="off" />
+              <span class="pw-field">
+                <input id="unlock-input" type="password" placeholder="Password" autocomplete="off" />
+                <button type="button" class="pw-toggle" id="unlock-eye" aria-label="Show password">👁</button>
+              </span>
               <button type="submit" class="btn primary">Unlock</button>
             </form>
           </div>
