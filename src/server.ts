@@ -184,14 +184,15 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     return json(out, 201);
   }
 
-  // --- Routes of a run ---
+  // --- Routes of a run (viewing is open; creating requires the password) ---
   if (path.startsWith("/api/runs/") && path.endsWith("/routes")) {
     const id = idFromPath("/api/runs/");
     const run = getRun(id);
-    const denied = authGuard(run, token);
-    if (denied) return denied;
+    if (!run) return bad("not found", 404);
     if (method === "GET") return json(listRoutes(id));
     if (method === "POST") {
+      const denied = authGuard(run, token);
+      if (denied) return denied;
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("route name required");
@@ -202,14 +203,15 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     }
   }
 
-  // --- Level caps of a run ---
+  // --- Level caps of a run (viewing open; adding requires the password) ---
   if (path.startsWith("/api/runs/") && path.endsWith("/level-caps")) {
     const id = idFromPath("/api/runs/");
     const run = getRun(id);
-    const denied = authGuard(run, token);
-    if (denied) return denied;
+    if (!run) return bad("not found", 404);
     if (method === "GET") return json(listLevelCaps(id));
     if (method === "POST") {
+      const denied = authGuard(run, token);
+      if (denied) return denied;
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("name required");
@@ -361,12 +363,7 @@ server = Bun.serve<WsData>({
         return;
       }
       if (msg.op === "watch" && typeof msg.runId === "number") {
-        const run = getRun(msg.runId);
-        if (!run) return;
-        if (!hasAccess(run, msg.token ?? null)) {
-          ws.send(JSON.stringify({ type: "denied", runId: msg.runId }));
-          return;
-        }
+        if (!getRun(msg.runId)) return; // viewing is open — no token needed
         if (ws.data.runId) ws.unsubscribe(`run:${ws.data.runId}`);
         ws.data.runId = msg.runId;
         ws.subscribe(`run:${msg.runId}`);

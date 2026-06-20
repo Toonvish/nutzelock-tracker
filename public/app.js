@@ -66,6 +66,7 @@ let runs = [];
 let activeRunId = Number(localStorage.getItem(ACTIVE_RUN_KEY)) || null;
 let routes = [];
 let levelCaps = [];
+let runEditable = true; // false when the active run is protected and not unlocked
 let pokedex = new Map(); // display(lower) -> { id, apiName, display }
 let pokedexList = [];
 let ws = null;
@@ -128,15 +129,27 @@ function iconBtn(label, title, cls) {
   return b;
 }
 
+// Monochrome eye icons that follow the theme via currentColor.
+const EYE_SVG =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_SVG =
+  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
 /** Toggle a password input's visibility from its adjacent eye button. */
 function wirePwToggle(btn) {
   if (!btn) return;
   const inp = btn.parentElement.querySelector("input");
+  const sync = () => {
+    btn.innerHTML = inp.type === "password" ? EYE_SVG : EYE_OFF_SVG;
+    btn.setAttribute(
+      "aria-label",
+      inp.type === "password" ? "Show password" : "Hide password",
+    );
+  };
+  sync();
   btn.addEventListener("click", () => {
-    const show = inp.type === "password";
-    inp.type = show ? "text" : "password";
-    btn.textContent = show ? "🙈" : "👁";
-    btn.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    inp.type = inp.type === "password" ? "text" : "password";
+    sync();
     inp.focus();
   });
 }
@@ -425,11 +438,6 @@ function connectWS() {
     if (m.type === "runs") refreshSidebar();
     else if (m.type === "routes" && m.runId === activeRunId) refreshRoutes();
     else if (m.type === "caps" && m.runId === activeRunId) loadCaps();
-    else if (m.type === "denied" && m.runId === activeRunId) {
-      delete tokens[activeRunId];
-      saveTokens();
-      loadActiveRun();
-    }
   };
 }
 
@@ -498,18 +506,26 @@ async function loadActiveRun() {
   emptyState.hidden = true;
   runView.hidden = false;
   updateRunHeader(run);
-
-  if (run.protected && !tokenFor(run.id)) {
-    $("#locked-view").hidden = false;
-    $("#routes-section").hidden = true;
-    $("#unlock-input").focus();
-    return;
-  }
-  $("#locked-view").hidden = true;
-  $("#routes-section").hidden = false;
+  // Viewing is always open; editing needs the password (a stored token).
+  runEditable = !run.protected || !!tokenFor(run.id);
+  applyEditableUI(run);
   watchRun(run.id);
   await loadRoutesData();
   loadCaps();
+}
+
+/** Show/hide edit controls based on whether the active run is unlocked. */
+function applyEditableUI(run) {
+  const locked = run.protected && !runEditable;
+  $("#unlock-btn").hidden = !locked;
+  $("#viewonly-banner").hidden = !locked;
+  $("#clone-run-btn").hidden = locked;
+  $("#delete-run-btn").hidden = locked;
+  $("#route-name-input").disabled = !runEditable;
+  $("#cap-name-input").disabled = !runEditable;
+  $("#cap-level-input").disabled = !runEditable;
+  $("#add-route-form").querySelector("button").disabled = !runEditable;
+  $("#add-cap-form").querySelector("button").disabled = !runEditable;
 }
 
 // ---- Level caps ----
@@ -543,6 +559,11 @@ function buildCapChip(cap) {
   name.textContent = cap.name;
   const lv = el("span", "cap-lv");
   lv.textContent = cap.level != null ? `Lv ${cap.level}` : "—";
+  chip.append(name, lv);
+  if (!runEditable) {
+    chip.classList.add("static"); // view-only: no toggle/remove
+    return chip;
+  }
   const del = el("button", "cap-del");
   del.type = "button";
   del.textContent = "×";
@@ -551,7 +572,7 @@ function buildCapChip(cap) {
     e.stopPropagation();
     deleteCap(cap);
   });
-  chip.append(name, lv, del);
+  chip.append(del);
   chip.title = cap.cleared ? "Cleared — click to unmark" : "Click to mark cleared";
   chip.addEventListener("click", () => toggleCap(cap));
   return chip;
@@ -724,6 +745,7 @@ function buildSoullinkCard(route, run) {
 function routeNameInput(route) {
   const i = input(route.name, "Route name");
   i.classList.add("route-name");
+  i.disabled = !runEditable;
   i.addEventListener("change", async () => {
     const name = i.value.trim() || route.name;
     i.value = name;
@@ -744,7 +766,7 @@ function routeNameInput(route) {
 function nickInput(enc) {
   const i = input(enc?.nickname || "", "Nickname");
   i.classList.add("nick");
-  i.disabled = !enc;
+  i.disabled = !enc || !runEditable;
   i.addEventListener("change", () =>
     patchEncounter(enc, { nickname: i.value.trim() || null }),
   );
@@ -753,7 +775,7 @@ function nickInput(enc) {
 
 function statusSelect(enc) {
   const sel = el("select", "status");
-  sel.disabled = !enc;
+  sel.disabled = !enc || !runEditable;
   const opts = [["", "—"], ...MANUAL_STATUSES.map((s) => [s, STATUS_LABELS[s]])];
   if (enc?.status === "bro_failed") opts.push(["bro_failed", STATUS_LABELS.bro_failed]);
   for (const [v, l] of opts) {
@@ -779,13 +801,14 @@ function encActions(enc) {
   infoBtn.disabled = !has;
   infoBtn.addEventListener("click", () => showInfo(enc));
   const evolveBtn = iconBtn("🧬", "Evolve");
-  evolveBtn.disabled = !has;
+  evolveBtn.disabled = !has || !runEditable;
   evolveBtn.addEventListener("click", () => evolve(enc));
   return [infoBtn, evolveBtn];
 }
 
 function deleteRouteBtn(route) {
   const b = iconBtn("✕", "Delete route", "del");
+  b.disabled = !runEditable;
   b.addEventListener("click", async () => {
     try {
       await api(`/api/routes/${route.id}`, {
@@ -833,7 +856,7 @@ function applyEncounter(e) {
 function buildEncounterPicker(enc, spriteBox) {
   const wrap = el("div", "combo");
   const inp = input(enc?.pokemon_name ? displayName(enc.pokemon_name) : "", "Pick or type…");
-  inp.disabled = !enc;
+  inp.disabled = !enc || !runEditable;
   wrap.appendChild(inp);
 
   let list = null;
@@ -1598,22 +1621,43 @@ $("#add-route-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("#unlock-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const pw = $("#unlock-input").value;
-  try {
-    const res = await api(`/api/runs/${activeRunId}/unlock`, {
-      method: "POST",
-      body: JSON.stringify({ password: pw }),
-    });
-    if (res.token) setToken(activeRunId, res.token);
-    $("#unlock-input").value = "";
-    await loadActiveRun();
-  } catch {
-    toast("Wrong password");
-  }
-});
-wirePwToggle($("#unlock-eye"));
+/** Modal to enter the run's password and enable editing. */
+function openUnlockModal() {
+  if (!activeRunId) return;
+  const form = el("form", "run-form");
+  form.innerHTML = `
+    <h3>Unlock to edit</h3>
+    <p class="muted">Enter the run's password to make changes. Viewing stays open without it.</p>
+    <label>Password
+      <span class="pw-field">
+        <input name="password" type="password" autocomplete="off">
+        <button type="button" class="pw-toggle"></button>
+      </span>
+    </label>
+    <button type="submit" class="btn primary">Unlock</button>
+  `;
+  wirePwToggle(form.querySelector(".pw-toggle"));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const pw = form.querySelector('input[name="password"]').value;
+    try {
+      const res = await api(`/api/runs/${activeRunId}/unlock`, {
+        method: "POST",
+        body: JSON.stringify({ password: pw }),
+      });
+      if (res.token) setToken(activeRunId, res.token);
+      closeModal();
+      await loadActiveRun();
+      toast("Unlocked — you can edit this run now.");
+    } catch {
+      toast("Wrong password");
+    }
+  });
+  openModal(form);
+  form.querySelector('input[name="password"]').focus();
+}
+$("#unlock-btn").addEventListener("click", openUnlockModal);
+$("#unlock-btn2").addEventListener("click", openUnlockModal);
 
 // ---- Boot ----
 (async () => {

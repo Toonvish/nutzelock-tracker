@@ -30,6 +30,7 @@
             </div>
             <div class="run-header-actions">
               <span id="sync-dot" class="sync-dot" title="Live sync"></span>
+              <button id="unlock-btn" class="btn" hidden>🔒 Unlock to edit</button>
               <button
                 id="clone-run-btn"
                 class="btn"
@@ -41,19 +42,11 @@
             </div>
           </header>
 
-          <!-- Lock screen for password-protected runs (shown until unlocked) -->
-          <div id="locked-view" class="locked" hidden>
-            <p>🔒 This session is password-protected.</p>
-            <form id="unlock-form" class="unlock">
-              <span class="pw-field">
-                <input id="unlock-input" type="password" placeholder="Password" autocomplete="off" />
-                <button type="button" class="pw-toggle" id="unlock-eye" aria-label="Show password">👁</button>
-              </span>
-              <button type="submit" class="btn primary">Unlock</button>
-            </form>
-          </div>
-
           <div id="routes-section">
+            <div id="viewonly-banner" class="viewonly" hidden>
+              <span>🔒 View only — this run is password-protected.</span>
+              <button type="button" id="unlock-btn2" class="btn">Unlock to edit</button>
+            </div>
             <details id="caps-section" class="caps" open>
               <summary>Level caps</summary>
               <div id="caps-list" class="caps-list"></div>
