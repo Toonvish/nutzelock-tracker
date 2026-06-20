@@ -256,6 +256,7 @@ async function getPokemonDetail(id) {
     stats: d.stats.map((s) => ({ name: s.stat.name, value: s.base_stat })),
     bst: d.stats.reduce((sum, s) => sum + s.base_stat, 0),
     abilities: d.abilities.map((a) => ({ name: a.ability.name, hidden: a.is_hidden })),
+    types: d.types.map((t) => t.type.name),
     speciesUrl: d.species.url,
   };
   detailCache.set(id, detail);
@@ -1224,6 +1225,206 @@ function setupTypeChart() {
   });
 }
 
+// ---- Type matchup calculator (defensive coverage of a type duo) ----
+
+/** A lightweight Pokémon search box; calls onPick(entry) on selection. */
+function buildMatchupPicker(onPick) {
+  const wrap = el("div", "combo");
+  const inp = input("", "Search a Pokémon…");
+  wrap.appendChild(inp);
+  let list = null;
+  let filtered = [];
+  let activeIdx = -1;
+  const closeList = () => {
+    if (list) list.remove();
+    list = null;
+    filtered = [];
+    activeIdx = -1;
+  };
+  const position = () => {
+    if (!list) return;
+    const r = inp.getBoundingClientRect();
+    list.style.left = `${r.left}px`;
+    list.style.top = `${r.bottom + 2}px`;
+    list.style.width = `${Math.max(r.width, 200)}px`;
+  };
+  const choose = (entry) => {
+    inp.value = entry.display;
+    closeList();
+    onPick(entry);
+  };
+  const setActive = (idx) => {
+    if (!list) return;
+    const items = [...list.children];
+    if (!items.length) return;
+    activeIdx = (idx + items.length) % items.length;
+    items.forEach((li, i) => li.classList.toggle("active", i === activeIdx));
+    items[activeIdx].scrollIntoView({ block: "nearest" });
+  };
+  const renderList = () => {
+    const q = inp.value.trim().toLowerCase();
+    filtered = q ? filterPokedex(q) : [];
+    closeAllCombos();
+    list = null;
+    if (!filtered.length) return;
+    list = el("ul", "combo-list");
+    filtered.forEach((e, i) => {
+      const li = el("li", "combo-item" + (i === 0 ? " active" : ""));
+      const img = document.createElement("img");
+      img.className = "combo-sprite";
+      img.src = spriteUrl(e.id);
+      img.alt = "";
+      img.loading = "lazy";
+      const name = el("span");
+      name.textContent = e.display;
+      const idTag = el("span", "combo-id");
+      idTag.textContent = `#${e.id}`;
+      li.append(img, name, idTag);
+      li.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        choose(e);
+      });
+      list.appendChild(li);
+    });
+    document.body.appendChild(list);
+    activeIdx = 0;
+    position();
+  };
+  inp.addEventListener("focus", () => {
+    if (inp.value.trim()) renderList();
+  });
+  inp.addEventListener("input", renderList);
+  inp.addEventListener("keydown", (ev) => {
+    if (!list) return;
+    if (ev.key === "ArrowDown") {
+      ev.preventDefault();
+      setActive(activeIdx + 1);
+    } else if (ev.key === "ArrowUp") {
+      ev.preventDefault();
+      setActive(activeIdx - 1);
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      if (filtered[activeIdx]) choose(filtered[activeIdx]);
+    } else if (ev.key === "Escape") {
+      closeList();
+    }
+  });
+  inp.addEventListener("blur", () => setTimeout(closeList, 150));
+  return wrap;
+}
+
+const MULT_LABEL = { 4: "×4", 2: "×2", 1: "×1", 0.5: "×½", 0.25: "×¼", 0: "×0" };
+
+function renderMatchup(container, chart, t1, t2) {
+  const rows = [];
+  for (const atk of TYPE_NAMES) {
+    if (!chart[atk]) continue; // attacker not in this chart
+    let m = t1 in chart[atk] ? chart[atk][t1] : 1;
+    if (t2 && t2 !== t1) m *= t2 in chart[atk] ? chart[atk][t2] : 1;
+    rows.push({ atk, m });
+  }
+  const buckets = [
+    { ms: [4], title: "Doubly weak (×4)" },
+    { ms: [2], title: "Weak (×2)" },
+    { ms: [0.5], title: "Resists (×½)" },
+    { ms: [0.25], title: "Doubly resists (×¼)" },
+    { ms: [0], title: "Immune (×0)" },
+    { ms: [1], title: "Normal damage (×1)" },
+  ];
+  container.innerHTML = "";
+  const groups = el("div", "matchup-groups");
+  for (const b of buckets) {
+    const matches = rows.filter((r) => b.ms.includes(r.m));
+    if (!matches.length) continue;
+    const section = el("div", "mu-group");
+    const h = el("div", "mu-group-title");
+    h.textContent = b.title;
+    const chips = el("div", "mu-chips");
+    for (const r of matches) {
+      const chip = el("span", "mu-chip");
+      chip.textContent = capitalize(r.atk);
+      chip.style.background = TYPE_COLORS[r.atk];
+      chip.title = `${capitalize(r.atk)}: ${MULT_LABEL[r.m]}`;
+      chips.appendChild(chip);
+    }
+    section.append(h, chips);
+    groups.appendChild(section);
+  }
+  container.appendChild(groups);
+}
+
+function colorTypeSelect(sel) {
+  sel.style.color = sel.value ? TYPE_COLORS[sel.value] : "var(--muted)";
+  sel.style.fontWeight = "600";
+}
+
+/** Wire the run-page "Type matchup" accordion. */
+function setupMatchup() {
+  const details = $("#matchup-section");
+  const host = $("#matchup-picker");
+  const t1 = $("#mu-type1");
+  const t2 = $("#mu-type2");
+  const result = $("#matchup-result");
+
+  for (const t of TYPE_NAMES) {
+    const o = el("option");
+    o.value = t;
+    o.textContent = capitalize(t);
+    t1.appendChild(o);
+  }
+  const none = el("option");
+  none.value = "";
+  none.textContent = "(none)";
+  t2.appendChild(none);
+  for (const t of TYPE_NAMES) {
+    const o = el("option");
+    o.value = t;
+    o.textContent = capitalize(t);
+    t2.appendChild(o.cloneNode(true));
+  }
+  t1.value = "normal";
+  t2.value = "";
+  colorTypeSelect(t1);
+  colorTypeSelect(t2);
+
+  let chart = null;
+  const render = async () => {
+    colorTypeSelect(t1);
+    colorTypeSelect(t2);
+    if (!t1.value) return;
+    if (!chart) {
+      result.innerHTML = `<p class="muted">Loading type data…</p>`;
+      try {
+        await loadTypeInfos();
+        chart = buildTypeChart(9).chart; // latest chart (all 18 types)
+      } catch {
+        result.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
+        return;
+      }
+    }
+    renderMatchup(result, chart, t1.value, t2.value);
+  };
+
+  host.appendChild(
+    buildMatchupPicker(async (entry) => {
+      try {
+        const detail = await getPokemonDetail(entry.id);
+        t1.value = detail.types[0] || "normal";
+        t2.value = detail.types[1] || "";
+      } catch {
+        /* keep current selects */
+      }
+      render();
+    }),
+  );
+
+  t1.addEventListener("change", render);
+  t2.addEventListener("change", render);
+  details.addEventListener("toggle", () => {
+    if (details.open) render();
+  });
+}
+
 // ---- New run modal ----
 function openNewRunModal() {
   const form = el("form", "run-form");
@@ -1282,6 +1483,7 @@ function openNewRunModal() {
 // ---- Top-level actions ----
 $("#new-run-btn").addEventListener("click", openNewRunModal);
 setupTypeChart();
+setupMatchup();
 
 $("#add-cap-form").addEventListener("submit", async (e) => {
   e.preventDefault();
