@@ -37,7 +37,7 @@ const TYPE_COLORS = {
 };
 const ACTIVE_RUN_KEY = "nuzlocke.activeRun";
 const TOKENS_KEY = "nuzlocke.tokens";
-const POKEDEX_KEY = "nuzlocke.pokedex.v1";
+const POKEDEX_KEY = "nuzlocke.pokedex.v3";
 const POKEAPI = "https://pokeapi.co/api/v2";
 const POKEAPI_LIST = `${POKEAPI}/pokemon?limit=100000`;
 const SPRITE_BASE =
@@ -128,12 +128,27 @@ function iconBtn(label, title, cls) {
   return b;
 }
 
-/** "mr-mime" -> "Mr Mime" */
-function displayName(apiName) {
-  return apiName
+const REGION_NAMES = {
+  alola: "Alolan",
+  galar: "Galarian",
+  hisui: "Hisuian",
+  paldea: "Paldean",
+};
+const titleCase = (s) =>
+  s
     .split("-")
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
+
+/** "mr-mime" -> "Mr Mime"; "rattata-alola" -> "Alolan Rattata". */
+function displayName(apiName) {
+  const parts = apiName.split("-");
+  const idx = parts.findIndex((p) => REGION_NAMES[p]);
+  if (idx <= 0) return titleCase(apiName);
+  const base = parts.slice(0, idx).map((p) => titleCase(p)).join(" ");
+  const region = REGION_NAMES[parts[idx]];
+  const extra = parts.slice(idx + 1).map((p) => titleCase(p)).join(" ");
+  return `${region} ${base}${extra ? ` (${extra})` : ""}`;
 }
 const spriteUrl = (id) => `${SPRITE_BASE}/${id}.png`;
 
@@ -174,7 +189,14 @@ async function loadPokedex() {
           return id ? { id, apiName: r.name, display: displayName(r.name) } : null;
         })
         .filter(Boolean)
-        .filter((e) => e.id <= 10000);
+        // Keep base species (id <= 10000) plus regional forms (Alolan,
+        // Galarian, Hisuian, Paldean); drop mega/gmax and Totem/cap cosmetics.
+        .filter(
+          (e) =>
+            e.id <= 10000 ||
+            (/-(alola|galar|hisui|paldea)(?:-|$)/.test(e.apiName) &&
+              !/(totem|cap)/.test(e.apiName)),
+        );
       localStorage.setItem(POKEDEX_KEY, JSON.stringify(entries));
     } catch {
       toast("Could not reach PokeAPI — you can still type names manually.");
