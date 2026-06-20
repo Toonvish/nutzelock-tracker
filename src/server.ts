@@ -69,13 +69,13 @@ function capLevel(v: unknown): number | null {
 }
 
 /** Derive a unique "<base> #N" name for a cloned run. */
-function cloneName(baseName: string): string {
+async function cloneName(baseName: string): Promise<string> {
   const stem = baseName.replace(/\s+#\d+$/, "").trim();
   const re = new RegExp(
     `^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s+#(\\d+))?$`,
   );
   let max = 1;
-  for (const r of listRuns()) {
+  for (const r of await listRuns()) {
     const m = r.name.match(re);
     if (m) max = Math.max(max, m[1] ? Number(m[1]) : 1);
   }
@@ -135,7 +135,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
 
   // --- Runs ---
   if (path === "/api/runs" && method === "GET") {
-    return json(listRuns());
+    return json(await listRuns());
   }
   if (path === "/api/runs" && method === "POST") {
     const b = await body();
@@ -144,7 +144,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     const mode = isMode(b.mode) ? b.mode : "normal";
     const password = optStr(b.password);
     const passwordHash = password ? Bun.password.hashSync(password) : null;
-    const run = createRun({
+    const run = await createRun({
       name,
       game: optStr(b.game),
       mode,
@@ -162,7 +162,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Unlock a protected run ---
   if (path.startsWith("/api/runs/") && path.endsWith("/unlock") && method === "POST") {
     const id = idFromPath("/api/runs/");
-    const run = getRun(id);
+    const run = await getRun(id);
     if (!run) return bad("not found", 404);
     if (!run.password_hash) return json({ token: null }); // not protected
     const b = await body();
@@ -175,10 +175,10 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Clone a run: same routes + settings, empty encounters ---
   if (path.startsWith("/api/runs/") && path.endsWith("/clone") && method === "POST") {
     const id = idFromPath("/api/runs/");
-    const run = getRun(id);
+    const run = await getRun(id);
     const denied = authGuard(run, token);
     if (denied) return denied;
-    const newRun = cloneRun(id, cloneName(run!.name));
+    const newRun = await cloneRun(id, await cloneName(run!.name));
     if (!newRun) return bad("not found", 404);
     broadcastRuns();
     const out: Record<string, unknown> = { ...newRun, password_hash: undefined };
@@ -189,16 +189,16 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Routes of a run (viewing is open; creating requires the password) ---
   if (path.startsWith("/api/runs/") && path.endsWith("/routes")) {
     const id = idFromPath("/api/runs/");
-    const run = getRun(id);
+    const run = await getRun(id);
     if (!run) return bad("not found", 404);
-    if (method === "GET") return json(listRoutes(id));
+    if (method === "GET") return json(await listRoutes(id));
     if (method === "POST") {
       const denied = authGuard(run, token);
       if (denied) return denied;
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("route name required");
-      const route = createRoute(id, name);
+      const route = await createRoute(id, name);
       broadcastRoutes(id);
       broadcastRuns();
       return json(route, 201);
@@ -208,16 +208,16 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Level caps of a run (viewing open; adding requires the password) ---
   if (path.startsWith("/api/runs/") && path.endsWith("/level-caps")) {
     const id = idFromPath("/api/runs/");
-    const run = getRun(id);
+    const run = await getRun(id);
     if (!run) return bad("not found", 404);
-    if (method === "GET") return json(listLevelCaps(id));
+    if (method === "GET") return json(await listLevelCaps(id));
     if (method === "POST") {
       const denied = authGuard(run, token);
       if (denied) return denied;
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("name required");
-      const cap = createLevelCap(id, name, capLevel(b.level));
+      const cap = await createLevelCap(id, name, capLevel(b.level));
       broadcastCaps(id);
       return json(cap, 201);
     }
@@ -226,8 +226,8 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Level cap update / delete ---
   if (path.startsWith("/api/level-caps/") && (method === "PUT" || method === "DELETE")) {
     const id = idFromPath("/api/level-caps/");
-    const runId = getLevelCapRunId(id);
-    const denied = authGuard(runId ? getRun(runId) : null, token);
+    const runId = await getLevelCapRunId(id);
+    const denied = authGuard(runId ? await getRun(runId) : null, token);
     if (denied) return denied;
     if (method === "PUT") {
       const b = await body();
@@ -239,11 +239,11 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       }
       if ("level" in b) fields.level = capLevel(b.level);
       if ("cleared" in b) fields.cleared = b.cleared ? 1 : 0;
-      const row = updateLevelCap(id, fields);
+      const row = await updateLevelCap(id, fields);
       if (runId) broadcastCaps(runId);
       return row ? json(row) : bad("not found", 404);
     }
-    deleteLevelCap(id);
+    await deleteLevelCap(id);
     if (runId) broadcastCaps(runId);
     return json({ ok: true });
   }
@@ -251,7 +251,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Run rename / delete ---
   if (path.startsWith("/api/runs/") && (method === "PUT" || method === "DELETE")) {
     const id = idFromPath("/api/runs/");
-    const run = getRun(id);
+    const run = await getRun(id);
     const denied = authGuard(run, token);
     if (denied) return denied;
     if (method === "PUT") {
@@ -263,11 +263,11 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
         fields.name = name;
       }
       if ("game" in b) fields.game = optStr(b.game);
-      const updated = updateRun(id, fields);
+      const updated = await updateRun(id, fields);
       broadcastRuns();
       return updated ? json(updated) : bad("not found", 404);
     }
-    deleteRun(id);
+    await deleteRun(id);
     runTokens.delete(id);
     broadcastRuns();
     return json({ ok: true });
@@ -276,18 +276,18 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Route rename / delete ---
   if (path.startsWith("/api/routes/") && (method === "PUT" || method === "DELETE")) {
     const id = idFromPath("/api/routes/");
-    const runId = getRouteRunId(id);
-    const denied = authGuard(runId ? getRun(runId) : null, token);
+    const runId = await getRouteRunId(id);
+    const denied = authGuard(runId ? await getRun(runId) : null, token);
     if (denied) return denied;
     if (method === "PUT") {
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("route name cannot be empty");
-      const row = updateRouteName(id, name);
+      const row = await updateRouteName(id, name);
       if (runId) broadcastRoutes(runId);
       return row ? json(row) : bad("not found", 404);
     }
-    deleteRoute(id);
+    await deleteRoute(id);
     if (runId) {
       broadcastRoutes(runId);
       broadcastRuns();
@@ -298,8 +298,8 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
   // --- Encounter update (the live-synced, soullink-aware edit) ---
   if (path.startsWith("/api/encounters/") && method === "PUT") {
     const id = idFromPath("/api/encounters/");
-    const runId = getEncounterRunId(id);
-    const denied = authGuard(runId ? getRun(runId) : null, token);
+    const runId = await getEncounterRunId(id);
+    const denied = authGuard(runId ? await getRun(runId) : null, token);
     if (denied) return denied;
     const b = await body();
     const fields: Parameters<typeof updateEncounter>[1] = {};
@@ -316,7 +316,7 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       else if (isStatus(b.status)) fields.status = b.status;
       else return bad("invalid status");
     }
-    const res = updateEncounter(id, fields);
+    const res = await updateEncounter(id, fields);
     if (!res) return bad("not found", 404);
     if (runId) {
       broadcastRoutes(runId);
@@ -357,7 +357,7 @@ server = Bun.serve<WsData>({
     open(ws: ServerWebSocket<WsData>) {
       ws.subscribe("runs"); // sidebar/run-list changes
     },
-    message(ws: ServerWebSocket<WsData>, raw) {
+    async message(ws: ServerWebSocket<WsData>, raw) {
       let msg: { op?: string; runId?: number; token?: string };
       try {
         msg = JSON.parse(String(raw));
@@ -365,7 +365,7 @@ server = Bun.serve<WsData>({
         return;
       }
       if (msg.op === "watch" && typeof msg.runId === "number") {
-        if (!getRun(msg.runId)) return; // viewing is open — no token needed
+        if (!(await getRun(msg.runId))) return; // viewing is open — no token needed
         if (ws.data.runId) ws.unsubscribe(`run:${ws.data.runId}`);
         ws.data.runId = msg.runId;
         ws.subscribe(`run:${msg.runId}`);

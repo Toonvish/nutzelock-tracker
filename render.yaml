@@ -1,20 +1,20 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 # Deploy: push to GitHub, then on dashboard.render.com → New → Blueprint.
+# Data lives in Turso (libSQL), so no persistent disk is needed — works on free.
 services:
   - type: web
     name: nuzlocke-tracker
     runtime: node # Render installs Bun automatically because bun.lock is present
-    plan: starter # a persistent disk (below) requires a paid instance; see README
+    plan: free
     region: frankfurt # change to the region nearest you (oregon, ohio, singapore, …)
     buildCommand: bun install
     startCommand: bun run start
     healthCheckPath: /
     autoDeploy: true
     envVars:
-      # Keep the SQLite database on the persistent disk so runs survive deploys.
-      - key: NUZLOCKE_DB
-        value: /var/data/nuzlocke.db
-    disk:
-      name: nuzlocke-data
-      mountPath: /var/data
-      sizeGB: 1
+      # Create a free DB at turso.tech, then set these in the Render dashboard.
+      # (sync: false keeps the secret out of the repo and prompts for it on deploy.)
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false

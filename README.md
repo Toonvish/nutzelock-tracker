@@ -29,31 +29,39 @@ The server binds `0.0.0.0`, so it's reachable on your LAN. Open <http://localhos
 
 ## Data
 
-SQLite at `data/nuzlocke.db` (override with `NUZLOCKE_DB`). Schema: `runs` → `routes` → `encounters` (one per slot; soullink uses slots 0 and 1). Deleting a run cascades to its routes and encounters. The DB auto-migrates older single-encounter data into the encounters table on first run.
+Uses **libSQL** (`@libsql/client`) — SQLite-compatible. Two modes, chosen by env:
+
+- **Local (default):** a SQLite file at `data/nuzlocke.db` (override with `NUZLOCKE_DB`).
+- **Hosted:** set `TURSO_DATABASE_URL` (and `TURSO_AUTH_TOKEN`) to use a [Turso](https://turso.tech) database — durable and free, ideal for hosts with ephemeral disks like Render.
+
+Schema: `runs` → `routes` → `encounters` (one per slot; soullink uses slots 0 and 1) + `level_caps`. Deleting a run removes its routes, encounters, and caps. The DB auto-creates its tables and migrates older single-encounter data on first run.
 
 ## Deploy on Render
 
-The server already reads `PORT` from the environment and binds `0.0.0.0`, so it works on Render as-is.
+The server reads `PORT` from the environment and binds `0.0.0.0`, so it runs on Render's **free** plan as-is — and because data lives in Turso, no persistent disk is needed.
 
-**Commands** (Render dashboard → New → Web Service):
+**1. Create a free database (Turso):**
+
+```sh
+# https://docs.turso.tech/quickstart
+turso db create nuzlocke
+turso db show nuzlocke --url        # -> TURSO_DATABASE_URL  (libsql://…)
+turso db tokens create nuzlocke     # -> TURSO_AUTH_TOKEN
+```
+
+**2. Create the Render Web Service** (New → Web Service):
 
 | Field | Value |
 |---|---|
 | Build Command | `bun install` |
 | Start Command | `bun run start` |
+| Runtime | **Bun** if offered, else **Node** (the committed `bun.lock` makes Render install Bun) |
 
-Runtime: pick **Bun** if offered; otherwise pick **Node** — the committed `bun.lock` makes Render install Bun automatically. (Render injects `PORT`; no need to set it.)
+Then add the two environment variables `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. (Render injects `PORT`; don't set it.) The app creates its tables automatically on first request.
 
-**Persist the database.** The app stores everything in SQLite at `data/nuzlocke.db`, and Render's filesystem is wiped on every deploy/restart. To keep your runs, add a **Persistent Disk** (requires a paid instance) and point the DB at it:
+**One-click blueprint.** `render.yaml` encodes the service + env vars (it prompts for the two Turso secrets). On Render: **New → Blueprint**, select the repo; edit `region` first if needed.
 
-- Disk mount path: `/var/data`
-- Env var: `NUZLOCKE_DB=/var/data/nuzlocke.db`
-
-On the free plan there's no persistent disk, so data resets on each deploy/sleep.
-
-**One-click blueprint.** `render.yaml` encodes all of the above (web service + disk + env). On Render: **New → Blueprint**, select the repo. Edit `region`/`plan` first if needed.
-
-**Docker (most reliable).** If the native Bun path gives trouble, set the service runtime to **Docker** — the included `Dockerfile` runs on the official `oven/bun` image. Still mount a disk at `/data` (the Dockerfile sets `NUZLOCKE_DB=/data/nuzlocke.db`).
+**Docker (alternative).** Set the runtime to **Docker** to run on the official `oven/bun` image (`Dockerfile` included); pass the same two Turso env vars.
 
 ## Build a single binary
 
