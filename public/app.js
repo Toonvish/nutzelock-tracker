@@ -9,6 +9,13 @@ const STATUS_LABELS = {
   missed: "Missed",
   bro_failed: "Bro failed",
 };
+const STATUS_COLORS = {
+  caught: "var(--green)",
+  boxed: "var(--blue)",
+  fainted: "var(--red)",
+  missed: "var(--gray)",
+  bro_failed: "var(--bro)",
+};
 const ACTIVE_RUN_KEY = "nuzlocke.activeRun";
 const TOKENS_KEY = "nuzlocke.tokens";
 const POKEDEX_KEY = "nuzlocke.pokedex.v1";
@@ -536,6 +543,9 @@ function statusSelect(enc) {
     const o = el("option");
     o.value = v;
     o.textContent = l;
+    // Color each option by its own status (not the selected one).
+    o.style.color = STATUS_COLORS[v] || "var(--muted)";
+    o.style.backgroundColor = "var(--panel-2)";
     sel.appendChild(o);
   }
   sel.value = enc?.status || "";
