@@ -145,6 +145,12 @@ select:focus {
   border-color: var(--accent);
 }
 
+input:disabled,
+select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .btn {
   border: 1px solid var(--border);
   background: var(--panel-2);
@@ -159,6 +165,14 @@ select:focus {
 
 .btn:hover {
   border-color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn:disabled:hover {
+  border-color: var(--border);
 }
 
 .btn.primary {
@@ -752,6 +766,10 @@ tr[data-status="missed"],
 .viewonly span {
   color: var(--muted);
   flex: 1;
+}
+/* `display: flex` above would otherwise override the [hidden] attribute. */
+.viewonly[hidden] {
+  display: none;
 }
 
 /* ---- Level caps ---- */
