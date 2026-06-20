@@ -521,11 +521,16 @@ function applyEditableUI(run) {
   $("#viewonly-banner").hidden = !locked;
   $("#clone-run-btn").hidden = locked;
   $("#delete-run-btn").hidden = locked;
-  $("#route-name-input").disabled = !runEditable;
-  $("#cap-name-input").disabled = !runEditable;
-  $("#cap-level-input").disabled = !runEditable;
-  $("#add-route-form").querySelector("button").disabled = !runEditable;
-  $("#add-cap-form").querySelector("button").disabled = !runEditable;
+  // Disable every input/select/textarea/button inside the run view when
+  // locked — including the reference tools — except the unlock buttons.
+  // (Per-row controls also gate on runEditable as they are built.)
+  for (const ctl of runView.querySelectorAll("input, select, textarea, button")) {
+    if (ctl.id === "unlock-btn" || ctl.id === "unlock-btn2") {
+      ctl.disabled = false;
+      continue;
+    }
+    ctl.disabled = !runEditable;
+  }
 }
 
 // ---- Level caps ----
@@ -798,7 +803,7 @@ function statusSelect(enc) {
 function encActions(enc) {
   const has = !!enc?.pokemon_id;
   const infoBtn = iconBtn("ℹ️", "Base stats & abilities");
-  infoBtn.disabled = !has;
+  infoBtn.disabled = !has || !runEditable;
   infoBtn.addEventListener("click", () => showInfo(enc));
   const evolveBtn = iconBtn("🧬", "Evolve");
   evolveBtn.disabled = !has || !runEditable;
