@@ -11,6 +11,7 @@ import {
   createRun,
   updateRun,
   deleteRun,
+  cloneRun,
   listRoutes,
   createRoute,
   updateRouteName,
@@ -52,6 +53,20 @@ function optStr(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim();
   return t === "" ? null : t;
+}
+
+/** Derive a unique "<base> #N" name for a cloned run. */
+function cloneName(baseName: string): string {
+  const stem = baseName.replace(/\s+#\d+$/, "").trim();
+  const re = new RegExp(
+    `^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s+#(\\d+))?$`,
+  );
+  let max = 1;
+  for (const r of listRuns()) {
+    const m = r.name.match(re);
+    if (m) max = Math.max(max, m[1] ? Number(m[1]) : 1);
+  }
+  return `${stem} #${max + 1}`;
 }
 
 // ---- Access tokens for password-protected runs (in-memory) ----
@@ -139,6 +154,20 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     if (!Bun.password.verifySync(password, run.password_hash))
       return bad("wrong password", 401);
     return json({ token: issueToken(id) });
+  }
+
+  // --- Clone a run: same routes + settings, empty encounters ---
+  if (path.startsWith("/api/runs/") && path.endsWith("/clone") && method === "POST") {
+    const id = idFromPath("/api/runs/");
+    const run = getRun(id);
+    const denied = authGuard(run, token);
+    if (denied) return denied;
+    const newRun = cloneRun(id, cloneName(run!.name));
+    if (!newRun) return bad("not found", 404);
+    broadcastRuns();
+    const out: Record<string, unknown> = { ...newRun, password_hash: undefined };
+    if (newRun.password_hash) out.token = issueToken(newRun.id);
+    return json(out, 201);
   }
 
   // --- Routes of a run ---

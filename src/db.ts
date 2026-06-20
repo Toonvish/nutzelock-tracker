@@ -225,6 +225,46 @@ export function deleteRun(id: number): void {
   getDb().query("DELETE FROM runs WHERE id = ?").run(id);
 }
 
+/**
+ * Create a fresh run that reuses a source run's settings (mode, player names,
+ * password) and route list, but with empty encounters — i.e. "play again".
+ */
+export function cloneRun(sourceId: number, newName: string): RunRow | null {
+  const src = getRun(sourceId);
+  if (!src) return null;
+  const db = getDb();
+  const run = createRun({
+    name: newName,
+    game: src.game,
+    mode: src.mode,
+    player1: src.player1,
+    player2: src.player2,
+    passwordHash: src.password_hash, // keep the same password
+  });
+  const srcRoutes = db
+    .query("SELECT name, position FROM routes WHERE run_id = ? ORDER BY position, id")
+    .all(sourceId) as { name: string; position: number }[];
+  const slots = src.mode === "soullink" ? [0, 1] : [0];
+  const insRoute = db.query(
+    "INSERT INTO routes (run_id, name, position) VALUES ($r, $n, $p) RETURNING id",
+  );
+  const insEnc = db.query(
+    "INSERT INTO encounters (route_id, slot) VALUES ($rid, $slot)",
+  );
+  const copyRoutes = db.transaction(() => {
+    for (const rt of srcRoutes) {
+      const nr = insRoute.get({
+        $r: run.id,
+        $n: rt.name,
+        $p: rt.position,
+      }) as { id: number };
+      for (const slot of slots) insEnc.run({ $rid: nr.id, $slot: slot });
+    }
+  });
+  copyRoutes();
+  return run;
+}
+
 // ---- Routes + encounters ----------------------------------------------
 
 export interface EncounterRow {

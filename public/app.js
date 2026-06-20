@@ -912,6 +912,36 @@ function openNewRunModal() {
 // ---- Top-level actions ----
 $("#new-run-btn").addEventListener("click", openNewRunModal);
 
+$("#clone-run-btn").addEventListener("click", async () => {
+  const run = runs.find((r) => r.id === activeRunId);
+  if (!run) return;
+  const extras =
+    run.mode === "soullink"
+      ? ` Player names${run.protected ? " and password" : ""} are kept.`
+      : run.protected
+        ? " The password is kept."
+        : "";
+  if (
+    !confirm(
+      `Start a new run with the same routes as "${run.name}"? ` +
+        `All encounters will be empty.${extras}`,
+    )
+  )
+    return;
+  try {
+    const newRun = await api(`/api/runs/${run.id}/clone`, {
+      method: "POST",
+      headers: runHeaders(),
+    });
+    if (newRun.token) setToken(newRun.id, newRun.token);
+    await loadRuns();
+    await selectRun(newRun.id);
+    toast(`Started "${newRun.name}".`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
 $("#delete-run-btn").addEventListener("click", async () => {
   const run = runs.find((r) => r.id === activeRunId);
   if (!run) return;
