@@ -48,10 +48,28 @@ import stylesCss from "../public/styles.css" with { type: "file" };
 import faviconSvg from "../public/favicon.svg" with { type: "file" };
 
 const PORT = Number(process.env.PORT ?? 3001);
-const SESSION_SECRET = process.env.SESSION_SECRET ?? "dev-insecure-secret-change-me";
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
 const COOKIE_DAYS = 60;
+
+// Login cookies are HMAC-signed with SESSION_SECRET. If login is configured we
+// must have a real secret — otherwise anyone could forge an auth cookie. In a
+// guest-only / local-dev setup (no Discord) no cookies are issued, so a
+// throwaway per-process key is fine (and never a known constant).
+let SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  if (DISCORD_CLIENT_ID) {
+    console.error(
+      "FATAL: SESSION_SECRET is required when Discord login is configured.\n" +
+        "Set it to a long random string so login cookies cannot be forged.",
+    );
+    process.exit(1);
+  }
+  SESSION_SECRET = `${crypto.randomUUID()}${crypto.randomUUID()}`;
+  console.warn(
+    "⚠  SESSION_SECRET not set — using an ephemeral key (ok for guest-only / local dev).",
+  );
+}
 
 const ASSETS: Record<string, { path: string; type: string }> = {
   "/": { path: indexHtml, type: "text/html; charset=utf-8" },
