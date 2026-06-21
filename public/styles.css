@@ -980,6 +980,17 @@ tr[data-status="missed"],
 .add-cap #cap-level-input {
   width: 70px;
 }
+/* The native number spinners can't be themed and clash with the dark UI —
+   hide them; the field is a plain 1–100 level you just type. */
+.add-cap #cap-level-input::-webkit-outer-spin-button,
+.add-cap #cap-level-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.add-cap #cap-level-input {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
 
 /* ---- Type effectiveness chart ---- */
 .modal-wide {
@@ -1000,27 +1011,35 @@ tr[data-status="missed"],
 }
 .tc-grid {
   overflow: auto;
-  max-height: 70vh;
+  max-height: 78vh;
+  border: 1px solid var(--border);
+  border-radius: 12px;
 }
 .type-chart {
   border-collapse: collapse;
-  font-size: 0.7rem;
+  width: 100%;
+  min-width: 940px;
+  table-layout: fixed;
+  font-size: 0.78rem;
 }
 .type-chart th,
 .type-chart td {
-  width: 30px;
-  min-width: 30px;
-  height: 26px;
+  height: 32px;
   text-align: center;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(0, 0, 0, 0.35);
   font-variant-numeric: tabular-nums;
+}
+.type-chart .tc-corner {
+  width: 96px;
 }
 .type-chart .tc-head,
 .type-chart .tc-row {
   color: #fff;
   font-weight: 700;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
-  position: sticky;
+  font-size: 0.72rem;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
 }
 .type-chart thead th {
   position: sticky;
@@ -1028,6 +1047,7 @@ tr[data-status="missed"],
   z-index: 2;
 }
 .type-chart .tc-row {
+  position: sticky;
   left: 0;
   z-index: 1;
 }
@@ -1038,26 +1058,79 @@ tr[data-status="missed"],
   z-index: 3;
   background: var(--panel);
   color: var(--muted);
-  font-size: 0.58rem;
+  font-size: 0.62rem;
+  line-height: 1.25;
+  padding: 4px 8px;
   white-space: nowrap;
-  padding: 0 6px;
+}
+.tc-corner-def {
+  display: block;
+  text-align: right;
+}
+.tc-corner-atk {
+  display: block;
+  text-align: left;
 }
 .type-chart .tc-cell {
-  background: var(--panel-2);
-  color: var(--text);
   font-weight: 700;
+  color: var(--text);
+}
+.type-chart .eff-normal {
+  background: var(--panel-2);
+  color: rgba(255, 255, 255, 0.26);
 }
 .type-chart .eff-super {
   background: #2ea043;
   color: #fff;
 }
 .type-chart .eff-weak {
-  background: #b9434f;
+  background: #c0414d;
   color: #fff;
 }
 .type-chart .eff-none {
-  background: #000;
-  color: #777;
+  background: #0b0e13;
+  color: rgba(255, 255, 255, 0.42);
+}
+/* Row + column crosshair highlight (a translucent overlay works on any bg). */
+.type-chart .tc-hl {
+  box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.13);
+}
+.type-chart .tc-hl-cell {
+  box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.26);
+}
+
+/* Type-chart legend */
+.tc-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 14px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+.tc-leg {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tc-sw {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  flex: none;
+}
+.tc-sw.eff-super {
+  background: #2ea043;
+}
+.tc-sw.eff-weak {
+  background: #c0414d;
+}
+.tc-sw.eff-none {
+  background: #0b0e13;
+}
+.tc-sw.eff-normal {
+  background: var(--panel-2);
 }
 
 /* ---- Type matchup calculator ---- */

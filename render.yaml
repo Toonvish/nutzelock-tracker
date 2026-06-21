@@ -7,7 +7,7 @@ services:
     runtime: node # Render installs Bun automatically because bun.lock is present
     plan: free
     region: frankfurt # change to the region nearest you
-    buildCommand: bun install
+    buildCommand: bun install && bun run build
     startCommand: bun run start
     healthCheckPath: /
     autoDeploy: true

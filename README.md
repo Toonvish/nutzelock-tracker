@@ -10,16 +10,19 @@ A web app to track a custom Pokémon Nuzlocke — solo or as a two-player **Soul
 
 ## Stack
 
-Bun + `@libsql/client` + `Bun.serve` (HTTP + WebSocket), with a dependency-free vanilla-JS SPA in `public/`. Login is Discord OAuth via a stateless signed cookie.
+Bun + `@libsql/client` + `Bun.serve` (HTTP + WebSocket), with a dependency-free vanilla-JS SPA. The client is authored as ES modules in `src/client/` and bundled to a single minified `public/app.js` by Bun's bundler (`bun run build`); the server hashes that bundle and `styles.css` and stamps `?v=<hash>` on their references for cache-busting. Login is Discord OAuth via a stateless signed cookie.
 
 ## Run
 
 ```sh
 bun install      # first time only (pulls bun-types)
-bun run dev      # watch mode
+bun run dev      # builds the client bundle, then serves with --watch
 # or
+bun run build    # produce public/app.js (generated; not committed)
 bun run start
 ```
+
+`public/app.js` is generated from `src/client/`, so run `bun run build` once after cloning (`bun run dev` does it for you). For client-side iteration, `bun run build:client` rebuilds the bundle on save.
 
 The server binds `0.0.0.0` and serves three pages: `/login`, `/sessions` (your sessions), and `/s/<share-id>` (a full-page session view). Discord login needs env vars (below); guest sessions work without them.
 
@@ -60,7 +63,7 @@ turso db tokens create nuzlocke     # -> TURSO_AUTH_TOKEN
 
 | Field | Value |
 |---|---|
-| Build Command | `bun install` |
+| Build Command | `bun install && bun run build` |
 | Start Command | `bun run start` |
 | Runtime | **Bun** if offered, else **Node** (the committed `bun.lock` makes Render install Bun) |
 

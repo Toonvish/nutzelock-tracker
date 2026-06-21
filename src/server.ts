@@ -3,7 +3,7 @@
 //  - Sessions (owned by a user or guest) reached by owner or by share_id.
 //  - A session has runs (attempts); each run owns routes/encounters/level caps.
 //  - Live sync over WebSocket per session.
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { Server, ServerWebSocket } from "bun";
 import {
   STATUSES,
@@ -72,11 +72,27 @@ if (!SESSION_SECRET) {
 }
 
 const ASSETS: Record<string, { path: string; type: string }> = {
-  "/": { path: indexHtml, type: "text/html; charset=utf-8" },
-  "/index.html": { path: indexHtml, type: "text/html; charset=utf-8" },
   "/app.js": { path: appJs, type: "text/javascript; charset=utf-8" },
   "/styles.css": { path: stylesCss, type: "text/css; charset=utf-8" },
   "/favicon.svg": { path: faviconSvg, type: "image/svg+xml" },
+};
+
+// ---- cache-busting ----
+// Hash the JS/CSS once at startup, stamp `?v=<hash>` onto their references in
+// index.html, and serve those assets `immutable`. A code change → new hash →
+// new URL → no stale bundle; index.html itself is always revalidated.
+const IMMUTABLE = "public, max-age=31536000, immutable";
+const shortHash = (s: string) =>
+  createHash("sha256").update(s).digest("hex").slice(0, 12);
+
+const APP_JS_HASH = shortHash(await Bun.file(appJs).text());
+const STYLES_HASH = shortHash(await Bun.file(stylesCss).text());
+const INDEX_HTML = (await Bun.file(indexHtml).text())
+  .replace('src="/app.js"', `src="/app.js?v=${APP_JS_HASH}"`)
+  .replace('href="/styles.css"', `href="/styles.css?v=${STYLES_HASH}"`);
+const HTML_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "no-cache",
 };
 
 // ---- response helpers ----
@@ -291,6 +307,53 @@ async function handleAuth(req: Request, url: URL): Promise<Response> {
   return bad("not found", 404);
 }
 
+// ---- Type chart (cached server-side) ----
+// The 18 type relations are static PokeAPI data. Fetch them once for the whole
+// process so each client makes a single `/api/typechart` request instead of 18
+// direct PokeAPI calls. Concurrent first-callers share one in-flight promise.
+const TYPE_CHART_NAMES = [
+  "normal", "fire", "water", "electric", "grass", "ice", "fighting", "poison",
+  "ground", "flying", "psychic", "bug", "rock", "ghost", "dragon", "dark",
+  "steel", "fairy",
+];
+let typeChartCache: unknown[] | null = null;
+let typeChartPromise: Promise<unknown[]> | null = null;
+
+async function loadTypeChart(): Promise<unknown[]> {
+  if (typeChartCache) return typeChartCache;
+  if (!typeChartPromise) {
+    typeChartPromise = (async () => {
+      const compact = (r: any) => ({
+        to2: r.double_damage_to.map((t: any) => t.name),
+        to05: r.half_damage_to.map((t: any) => t.name),
+        to0: r.no_damage_to.map((t: any) => t.name),
+      });
+      const infos = await Promise.all(
+        TYPE_CHART_NAMES.map(async (name) => {
+          const res = await fetch(`https://pokeapi.co/api/v2/type/${name}`);
+          if (!res.ok) throw new Error(`type ${name}: HTTP ${res.status}`);
+          const d: any = await res.json();
+          return {
+            name,
+            gen: d.generation.name,
+            rel: compact(d.damage_relations),
+            past: (d.past_damage_relations || []).map((p: any) => ({
+              gen: p.generation.name,
+              ...compact(p.damage_relations),
+            })),
+          };
+        }),
+      );
+      typeChartCache = infos;
+      return infos;
+    })().catch((e) => {
+      typeChartPromise = null; // allow a retry on the next request
+      throw e;
+    });
+  }
+  return typeChartPromise;
+}
+
 // ---- JSON API ----
 async function handleApi(req: Request, url: URL): Promise<Response> {
   const path = url.pathname;
@@ -313,6 +376,16 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
         ? { id: user.id, name: user.name, avatar_url: user.avatar_url }
         : null,
     });
+  }
+
+  // --- type effectiveness chart (cached) ---
+  if (path === "/api/typechart" && method === "GET") {
+    try {
+      const infos = await loadTypeChart();
+      return json(infos, 200, { "cache-control": "public, max-age=86400" });
+    } catch {
+      return bad("could not load type data", 502);
+    }
   }
 
   // --- sessions list (owner only) ---
@@ -504,10 +577,14 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
 }
 
 function serveStatic(url: URL): Response {
-  const asset = ASSETS[url.pathname] ?? ASSETS["/"]; // SPA fallback for client routes
-  return new Response(Bun.file(asset.path), {
-    headers: { "content-type": asset.type },
-  });
+  const p = url.pathname;
+  // index.html (and the SPA fallback for client routes) — always revalidate.
+  if (p === "/" || p === "/index.html" || !ASSETS[p])
+    return new Response(INDEX_HTML, { headers: HTML_HEADERS });
+  const asset = ASSETS[p];
+  const headers: Record<string, string> = { "content-type": asset.type };
+  if (p === "/app.js" || p === "/styles.css") headers["cache-control"] = IMMUTABLE;
+  return new Response(Bun.file(asset.path), { headers });
 }
 
 server = Bun.serve<WsData>({
