@@ -96,9 +96,25 @@ const api = async (path, opts = {}) => {
     headers: { "content-type": "application/json", ...(opts.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    // Our stored token is no longer valid server-side (e.g. the server
+    // restarted and dropped its in-memory tokens). Re-lock and re-prompt.
+    if (res.status === 401 && data.error === "locked") relock();
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
   return data;
 };
+
+/** Drop a stale access token for the active run and prompt to unlock again. */
+function relock() {
+  if (!activeRunId) return;
+  delete tokens[activeRunId];
+  saveTokens();
+  loadActiveRun().then(() => {
+    const run = runs.find((r) => r.id === activeRunId);
+    if (run?.protected) openUnlockModal();
+  });
+}
 
 function toast(msg) {
   const node = document.createElement("div");
