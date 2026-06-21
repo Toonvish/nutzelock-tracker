@@ -1,20 +1,31 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 # Deploy: push to GitHub, then on dashboard.render.com → New → Blueprint.
-# Data lives in Turso (libSQL), so no persistent disk is needed — works on free.
+# Data lives in Turso (libSQL); login is Discord OAuth. No persistent disk needed.
 services:
   - type: web
     name: nuzlocke-tracker
     runtime: node # Render installs Bun automatically because bun.lock is present
     plan: free
-    region: frankfurt # change to the region nearest you (oregon, ohio, singapore, …)
+    region: frankfurt # change to the region nearest you
     buildCommand: bun install
     startCommand: bun run start
     healthCheckPath: /
     autoDeploy: true
     envVars:
-      # Create a free DB at turso.tech, then set these in the Render dashboard.
-      # (sync: false keeps the secret out of the repo and prompts for it on deploy.)
+      # --- Turso (free DB) — create at turso.tech, then set in the dashboard ---
       - key: TURSO_DATABASE_URL
         sync: false
       - key: TURSO_AUTH_TOKEN
+        sync: false
+      # --- Discord OAuth — register an app at discord.com/developers ---
+      # Add redirect URL https://<your-render-url>/auth/discord/callback there.
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      # Random string used to sign login cookies. Generate any long secret.
+      - key: SESSION_SECRET
+        generateValue: true
+      # Optional: override the OAuth redirect (else derived from the request host).
+      - key: DISCORD_REDIRECT_URI
         sync: false

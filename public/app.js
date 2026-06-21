@@ -1,9 +1,10 @@
-// Custom Nuzlocke Tracker — dependency-free SPA.
-// REST + WebSocket against the Bun server; Pokémon data from PokeAPI.
+// Nuzlocke Tracker — dependency-free SPA.
+// Pages: /login, /sessions, /s/:shareId. A session contains runs (attempts);
+// access is by ownership (logged in) or by holding the share link.
 
 const MANUAL_STATUSES = ["caught", "boxed", "fainted", "missed"];
 const STATUS_LABELS = {
-  caught: "Caught",
+  caught: "Alive",
   boxed: "Boxed",
   fainted: "Fainted",
   missed: "Missed",
@@ -35,8 +36,6 @@ const TYPE_COLORS = {
   rock: "#afa981", ghost: "#704170", dragon: "#5060e1", dark: "#624d4e",
   steel: "#60a1b8", fairy: "#ef70ef",
 };
-const ACTIVE_RUN_KEY = "nuzlocke.activeRun";
-const TOKENS_KEY = "nuzlocke.tokens";
 const POKEDEX_KEY = "nuzlocke.pokedex.v3";
 const POKEAPI = "https://pokeapi.co/api/v2";
 const POKEAPI_LIST = `${POKEAPI}/pokemon?limit=100000`;
@@ -44,50 +43,29 @@ const SPRITE_BASE =
   "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon";
 
 const STAT_LABELS = {
-  hp: "HP",
-  attack: "Atk",
-  defense: "Def",
-  "special-attack": "SpA",
-  "special-defense": "SpD",
-  speed: "Spe",
+  hp: "HP", attack: "Atk", defense: "Def",
+  "special-attack": "SpA", "special-defense": "SpD", speed: "Spe",
 };
 
-// ---- DOM refs ----
 const $ = (sel) => document.querySelector(sel);
-const runList = $("#run-list");
-const emptyState = $("#empty-state");
-const runView = $("#run-view");
-const runTitle = $("#run-title");
-const runSubtitle = $("#run-subtitle");
 const routesArea = $("#routes-area");
 
 // ---- State ----
-let runs = [];
-let activeRunId = Number(localStorage.getItem(ACTIVE_RUN_KEY)) || null;
+let me = null; // logged-in user or null
+let session = null; // current SessionRow (on session view)
+let shareId = null; // current session's share id
+let attempts = []; // RunSummary[] of the current session
+let activeRunId = null; // active attempt id
 let routes = [];
 let levelCaps = [];
-let runEditable = true; // false when the active run is protected and not unlocked
+const runEditable = true; // reaching a session implies edit rights here
 let pokedex = new Map(); // display(lower) -> { id, apiName, display }
 let pokedexList = [];
 let ws = null;
 let pendingRoutesRefresh = false;
 
-let tokens = {};
-try {
-  tokens = JSON.parse(localStorage.getItem(TOKENS_KEY) || "{}");
-} catch {
-  tokens = {};
-}
-const saveTokens = () => localStorage.setItem(TOKENS_KEY, JSON.stringify(tokens));
-const tokenFor = (id) => tokens[id];
-const setToken = (id, t) => {
-  tokens[id] = t;
-  saveTokens();
-};
-const runHeaders = (id = activeRunId) => {
-  const t = tokenFor(id);
-  return t ? { "x-run-token": t } : {};
-};
+// All session/run-scoped requests carry the share id as the capability.
+const runHeaders = () => (shareId ? { "x-share-id": shareId } : {});
 
 // ---- Helpers ----
 const api = async (path, opts = {}) => {
@@ -96,25 +74,9 @@ const api = async (path, opts = {}) => {
     headers: { "content-type": "application/json", ...(opts.headers || {}) },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    // Our stored token is no longer valid server-side (e.g. the server
-    // restarted and dropped its in-memory tokens). Re-lock and re-prompt.
-    if (res.status === 401 && data.error === "locked") relock();
-    throw new Error(data.error || `HTTP ${res.status}`);
-  }
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 };
-
-/** Drop a stale access token for the active run and prompt to unlock again. */
-function relock() {
-  if (!activeRunId) return;
-  delete tokens[activeRunId];
-  saveTokens();
-  loadActiveRun().then(() => {
-    const run = runs.find((r) => r.id === activeRunId);
-    if (run?.protected) openUnlockModal();
-  });
-}
 
 function toast(msg) {
   const node = document.createElement("div");
@@ -145,42 +107,9 @@ function iconBtn(label, title, cls) {
   return b;
 }
 
-// Monochrome eye icons that follow the theme via currentColor.
-const EYE_SVG =
-  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>';
-const EYE_OFF_SVG =
-  '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20C5 20 1 12 1 12a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
-
-/** Toggle a password input's visibility from its adjacent eye button. */
-function wirePwToggle(btn) {
-  if (!btn) return;
-  const inp = btn.parentElement.querySelector("input");
-  const sync = () => {
-    btn.innerHTML = inp.type === "password" ? EYE_SVG : EYE_OFF_SVG;
-    btn.setAttribute(
-      "aria-label",
-      inp.type === "password" ? "Show password" : "Hide password",
-    );
-  };
-  sync();
-  btn.addEventListener("click", () => {
-    inp.type = inp.type === "password" ? "text" : "password";
-    sync();
-    inp.focus();
-  });
-}
-
-const REGION_NAMES = {
-  alola: "Alolan",
-  galar: "Galarian",
-  hisui: "Hisuian",
-  paldea: "Paldean",
-};
+const REGION_NAMES = { alola: "Alolan", galar: "Galarian", hisui: "Hisuian", paldea: "Paldean" };
 const titleCase = (s) =>
-  s
-    .split("-")
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-    .join(" ");
+  s.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 
 /** "mr-mime" -> "Mr Mime"; "rattata-alola" -> "Alolan Rattata". */
 function displayName(apiName) {
@@ -231,8 +160,6 @@ async function loadPokedex() {
           return id ? { id, apiName: r.name, display: displayName(r.name) } : null;
         })
         .filter(Boolean)
-        // Keep base species (id <= 10000) plus regional forms (Alolan,
-        // Galarian, Hisuian, Paldean); drop mega/gmax and Totem/cap cosmetics.
         .filter(
           (e) =>
             e.id <= 10000 ||
@@ -357,10 +284,9 @@ async function getEvolutions(detail) {
 }
 
 // ---- Dupes clause: warn when an evolution line is already an encounter ----
-const familyCache = new Map(); // pokemonId -> evolution-chain id (family key)
-let dupeInfo = new Map(); // encounterId -> { routeName, slot } of the conflict
+const familyCache = new Map();
+let dupeInfo = new Map();
 
-/** The evolution-chain id shared by a whole evolution family. */
 async function getFamilyKey(pokemonId) {
   if (familyCache.has(pokemonId)) return familyCache.get(pokemonId);
   let key = null;
@@ -376,7 +302,6 @@ async function getFamilyKey(pokemonId) {
   return key;
 }
 
-/** Two encounters are dupes if their families match on *different* routes. */
 async function recomputeDupes() {
   const items = [];
   for (const route of routes)
@@ -403,12 +328,11 @@ async function recomputeDupes() {
   applyDupeBadges();
 }
 
-function playerLabel(run, slot) {
-  return slot === 0 ? run?.player1 || "Player 1" : run?.player2 || "Player 2";
+function playerLabel(slot) {
+  return slot === 0 ? session?.player1 || "Player 1" : session?.player2 || "Player 2";
 }
 
 function applyDupeBadges() {
-  const run = runs.find((r) => r.id === activeRunId);
   for (const box of routesArea.querySelectorAll(".sprite-box[data-enc-id]")) {
     box.querySelector(".dupe-badge")?.remove();
     box.classList.remove("has-dupe");
@@ -417,7 +341,7 @@ function applyDupeBadges() {
     box.classList.add("has-dupe");
     const badge = el("span", "dupe-badge");
     badge.textContent = "⚠";
-    const who = run?.mode === "soullink" ? ` (${playerLabel(run, info.slot)})` : "";
+    const who = session?.mode === "soullink" ? ` (${playerLabel(info.slot)})` : "";
     badge.title = `Dupe — this evolution line is already an encounter on ${info.routeName}${who}`;
     box.appendChild(badge);
   }
@@ -428,16 +352,16 @@ function setSync(on) {
   const d = $("#sync-dot");
   if (d) d.classList.toggle("on", on);
 }
-function watchRun(runId) {
-  if (ws && ws.readyState === 1)
-    ws.send(JSON.stringify({ op: "watch", runId, token: tokenFor(runId) }));
+function watchSession() {
+  if (ws && ws.readyState === 1 && shareId)
+    ws.send(JSON.stringify({ op: "watch", shareId }));
 }
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen = () => {
     setSync(true);
-    if (activeRunId) watchRun(activeRunId);
+    watchSession();
   };
   ws.onclose = () => {
     setSync(false);
@@ -451,102 +375,142 @@ function connectWS() {
     } catch {
       return;
     }
-    if (m.type === "runs") refreshSidebar();
-    else if (m.type === "routes" && m.runId === activeRunId) refreshRoutes();
+    if (m.type === "routes" && m.runId === activeRunId) refreshRoutes();
     else if (m.type === "caps" && m.runId === activeRunId) loadCaps();
+    else if (m.type === "session") reloadAttempts();
   };
 }
 
-// ---- Runs (sidebar) ----
-async function loadRuns() {
-  runs = await api("/api/runs");
-  if (activeRunId && !runs.some((r) => r.id === activeRunId)) activeRunId = null;
-  if (!activeRunId && runs.length) activeRunId = runs[0].id;
-  renderRuns();
-  await loadActiveRun();
+// ---- Router & pages ----
+function showView(id) {
+  for (const v of document.querySelectorAll(".page")) v.hidden = v.id !== id;
+}
+function nav(path) {
+  history.pushState({}, "", path);
+  route();
+}
+window.addEventListener("popstate", route);
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a[data-link]");
+  if (a) {
+    e.preventDefault();
+    nav(a.getAttribute("href"));
+  }
+});
+
+function route() {
+  const path = location.pathname;
+  if (path.startsWith("/s/")) return openSession(decodeURIComponent(path.slice(3)));
+  if (path === "/sessions") return showSessions();
+  if (path === "/login") return showLogin();
+  return nav(me ? "/sessions" : "/login");
 }
 
-/** Refetch runs and update the sidebar + header only (leaves routes alone). */
-async function refreshSidebar() {
-  runs = await api("/api/runs");
-  renderRuns();
-  const run = runs.find((r) => r.id === activeRunId);
-  if (run) updateRunHeader(run);
+function showLogin() {
+  shareId = null;
+  showView("login-view");
+  const err = new URLSearchParams(location.search).get("error");
+  const e = $("#login-error");
+  e.hidden = !err;
+  if (err) e.textContent = "Login failed — please try again.";
 }
 
-function renderRuns() {
-  runList.innerHTML = "";
-  for (const run of runs) {
-    const li = el("li", "run-item" + (run.id === activeRunId ? " active" : ""));
-    li.dataset.id = run.id;
-    const prefix =
-      (run.protected ? "🔒 " : "") + (run.mode === "soullink" ? "🔗 " : "");
-    const tally =
-      `${run.caught} caught · ${run.fainted} fainted` +
-      (run.bro_failed ? ` · ${run.bro_failed} bro` : "");
-    li.innerHTML = `<div class="run-name"></div><div class="run-tally">${tally}</div>`;
-    li.querySelector(".run-name").textContent = prefix + run.name;
-    li.addEventListener("click", () => selectRun(run.id));
-    runList.appendChild(li);
+async function showSessions() {
+  if (!me) return nav("/login");
+  shareId = null;
+  showView("sessions-view");
+  const chip = $("#user-chip");
+  chip.innerHTML = "";
+  if (me.avatar_url) {
+    const img = el("img", "user-avatar");
+    img.src = me.avatar_url;
+    img.alt = "";
+    chip.appendChild(img);
+  }
+  const nm = el("span");
+  nm.textContent = me.name || "You";
+  chip.appendChild(nm);
+  try {
+    const list = await api("/api/sessions");
+    renderSessions(list);
+  } catch (err) {
+    toast(err.message);
   }
 }
 
-async function selectRun(id) {
-  activeRunId = id;
-  localStorage.setItem(ACTIVE_RUN_KEY, String(id));
-  renderRuns();
-  await loadActiveRun();
+function renderSessions(list) {
+  const ul = $("#sessions-list");
+  ul.innerHTML = "";
+  $("#sessions-empty").hidden = list.length > 0;
+  for (const s of list) {
+    const li = el("li", "session-item");
+    const name = el("div", "s-name");
+    name.textContent = (s.mode === "soullink" ? "🔗 " : "") + s.name;
+    const meta = el("div", "s-meta muted");
+    meta.textContent =
+      `${s.run_count} run${s.run_count === 1 ? "" : "s"}` +
+      (s.game ? ` · ${s.game}` : "");
+    li.append(name, meta);
+    li.addEventListener("click", () => nav(`/s/${s.share_id}`));
+    ul.appendChild(li);
+  }
 }
 
-function updateRunHeader(run) {
-  runTitle.textContent = run.name;
-  const parts = [];
-  if (run.mode === "soullink") {
-    parts.push(
-      "🔗 Soullink · " + `${run.player1 || "Player 1"} & ${run.player2 || "Player 2"}`,
-    );
+async function openSession(sid) {
+  shareId = sid;
+  let data;
+  try {
+    data = await api(`/api/sessions/${sid}`);
+  } catch {
+    toast("That run could not be found.");
+    return nav(me ? "/sessions" : "/login");
   }
-  if (run.game) parts.push(run.game);
-  parts.push(`${run.routes} routes`);
-  if (run.protected) parts.push("🔒 protected");
-  runSubtitle.textContent = parts.join(" · ");
-}
-
-async function loadActiveRun() {
-  const run = runs.find((r) => r.id === activeRunId);
-  if (!run) {
-    runView.hidden = true;
-    emptyState.hidden = false;
-    return;
-  }
-  emptyState.hidden = true;
-  runView.hidden = false;
-  updateRunHeader(run);
-  // Viewing is always open; editing needs the password (a stored token).
-  runEditable = !run.protected || !!tokenFor(run.id);
-  applyEditableUI(run);
-  watchRun(run.id);
+  session = data.session;
+  attempts = data.runs;
+  activeRunId = attempts.length
+    ? attempts[attempts.length - 1].id // latest attempt
+    : null;
+  showView("session-view");
+  renderSessionHeader();
+  watchSession();
   await loadRoutesData();
   loadCaps();
 }
 
-/** Show/hide edit controls based on whether the active run is unlocked. */
-function applyEditableUI(run) {
-  const locked = run.protected && !runEditable;
-  $("#unlock-btn").hidden = !locked;
-  $("#viewonly-banner").hidden = !locked;
-  $("#clone-run-btn").hidden = locked;
-  $("#delete-run-btn").hidden = locked;
-  // Disable every input/select/textarea/button inside the run view when
-  // locked — including the reference tools — except the unlock buttons.
-  // (Per-row controls also gate on runEditable as they are built.)
-  for (const ctl of runView.querySelectorAll("input, select, textarea, button")) {
-    if (ctl.id === "unlock-btn" || ctl.id === "unlock-btn2") {
-      ctl.disabled = false;
-      continue;
-    }
-    ctl.disabled = !runEditable;
+/** Refetch the session meta + attempts (after a new run or rename). */
+async function reloadAttempts() {
+  if (!shareId) return;
+  try {
+    const data = await api(`/api/sessions/${shareId}`);
+    session = data.session;
+    attempts = data.runs;
+    if (!attempts.some((a) => a.id === activeRunId))
+      activeRunId = attempts.length ? attempts[attempts.length - 1].id : null;
+    renderSessionHeader();
+  } catch {
+    /* ignore */
   }
+}
+
+function renderSessionHeader() {
+  $("#run-title").textContent = session.name;
+  const parts = [];
+  if (session.mode === "soullink")
+    parts.push(
+      `🔗 Soullink · ${session.player1 || "Player 1"} & ${session.player2 || "Player 2"}`,
+    );
+  if (session.game) parts.push(session.game);
+  $("#run-subtitle").textContent = parts.join(" · ");
+
+  const sel = $("#attempt-select");
+  sel.innerHTML = "";
+  for (const a of attempts) {
+    const o = el("option");
+    o.value = String(a.id);
+    o.textContent = `Run #${a.run_number}`;
+    sel.appendChild(o);
+  }
+  if (activeRunId != null) sel.value = String(activeRunId);
 }
 
 // ---- Level caps ----
@@ -581,10 +545,6 @@ function buildCapChip(cap) {
   const lv = el("span", "cap-lv");
   lv.textContent = cap.level != null ? `Lv ${cap.level}` : "—";
   chip.append(name, lv);
-  if (!runEditable) {
-    chip.classList.add("static"); // view-only: no toggle/remove
-    return chip;
-  }
   const del = el("button", "cap-del");
   del.type = "button";
   del.textContent = "×";
@@ -626,22 +586,21 @@ async function deleteCap(cap) {
   }
 }
 
+// ---- Routes ----
 async function loadRoutesData() {
   pendingRoutesRefresh = false;
-  if (!activeRunId) return;
-  try {
-    routes = await api(`/api/runs/${activeRunId}/routes`, {
-      headers: runHeaders(),
-    });
-  } catch (err) {
-    if (String(err.message).includes("locked")) {
-      delete tokens[activeRunId];
-      saveTokens();
-      return loadActiveRun();
-    }
-    throw err;
+  if (!activeRunId) {
+    routes = [];
+    renderRoutes();
+    return;
   }
-  renderRoutes(runs.find((r) => r.id === activeRunId));
+  try {
+    routes = await api(`/api/runs/${activeRunId}/routes`, { headers: runHeaders() });
+  } catch (err) {
+    toast(err.message);
+    routes = [];
+  }
+  renderRoutes();
 }
 
 /** WS told us routes changed — refetch, but never clobber an in-progress edit. */
@@ -661,13 +620,12 @@ routesArea.addEventListener("focusout", () => {
   }, 120);
 });
 
-// ---- Routes rendering ----
-function renderRoutes(run) {
+function renderRoutes() {
   routesArea.innerHTML = "";
-  if (!run) return;
-  if (run.mode === "soullink") {
+  if (!session) return;
+  if (session.mode === "soullink") {
     const cards = el("div", "cards");
-    for (const route of routes) cards.appendChild(buildSoullinkCard(route, run));
+    for (const route of routes) cards.appendChild(buildSoullinkCard(route));
     routesArea.appendChild(cards);
     enableDrag(cards, ".route-card");
   } else {
@@ -678,7 +636,7 @@ function renderRoutes(run) {
       <th class="col-pokemon">Pokémon</th><th class="col-nick">Nickname</th>
       <th class="col-status">Status</th><th class="col-actions"></th></tr></thead>`;
     const tbody = el("tbody");
-    for (const route of routes) tbody.appendChild(buildNormalRow(route, run));
+    for (const route of routes) tbody.appendChild(buildNormalRow(route));
     table.appendChild(tbody);
     wrap.appendChild(table);
     routesArea.appendChild(wrap);
@@ -690,7 +648,6 @@ function renderRoutes(run) {
 // ---- Drag-to-reorder ----
 let dragEl = null;
 
-/** A grip handle that drags its row/card to reorder. */
 function dragHandle() {
   const h = el("span", "drag-handle");
   h.textContent = "⠿";
@@ -737,7 +694,6 @@ function dragAfter(container, itemSelector, y) {
   return closest.el;
 }
 
-/** Push the current DOM order to the server (and update local state). */
 async function persistOrder() {
   const ids = [...routesArea.querySelectorAll("[data-route-id]")].map((node) =>
     Number(node.dataset.routeId),
@@ -753,24 +709,21 @@ async function persistOrder() {
     });
   } catch (err) {
     toast(err.message);
-    loadRoutesData(); // revert to server order on failure
+    loadRoutesData();
   }
 }
 
 function rerenderRoute(routeId) {
-  const run = runs.find((r) => r.id === activeRunId);
   const route = routes.find((r) => r.id === routeId);
   const old = routesArea.querySelector(`[data-route-id="${routeId}"]`);
-  if (!run || !route || !old) return;
+  if (!route || !old) return;
   old.replaceWith(
-    run.mode === "soullink"
-      ? buildSoullinkCard(route, run)
-      : buildNormalRow(route, run),
+    session.mode === "soullink" ? buildSoullinkCard(route) : buildNormalRow(route),
   );
-  applyDupeBadges(); // re-add badges to the rebuilt element from current state
+  applyDupeBadges();
 }
 
-function buildNormalRow(route, run) {
+function buildNormalRow(route) {
   const enc = route.encounters[0];
   const tr = el("tr");
   tr.dataset.routeId = route.id;
@@ -778,7 +731,7 @@ function buildNormalRow(route, run) {
 
   const nameTd = el("td", "route-name-cell");
   const nameWrap = el("div", "route-name-wrap");
-  if (runEditable) nameWrap.appendChild(dragHandle());
+  nameWrap.appendChild(dragHandle());
   nameWrap.appendChild(routeNameInput(route));
   nameTd.appendChild(nameWrap);
 
@@ -804,12 +757,12 @@ function buildNormalRow(route, run) {
   return tr;
 }
 
-function buildSoullinkCard(route, run) {
+function buildSoullinkCard(route) {
   const card = el("div", "route-card");
   card.dataset.routeId = route.id;
 
   const head = el("div", "card-head");
-  if (runEditable) head.appendChild(dragHandle());
+  head.appendChild(dragHandle());
   head.appendChild(routeNameInput(route));
   head.appendChild(deleteRouteBtn(route));
   card.appendChild(head);
@@ -821,7 +774,7 @@ function buildSoullinkCard(route, run) {
     if (enc?.status) panel.dataset.status = enc.status;
 
     const label = el("div", "enc-player");
-    label.textContent = slot === 0 ? run.player1 || "Player 1" : run.player2 || "Player 2";
+    label.textContent = playerLabel(slot);
 
     const top = el("div", "enc-top");
     const box = el("div", "sprite-box");
@@ -842,7 +795,6 @@ function buildSoullinkCard(route, run) {
 function routeNameInput(route) {
   const i = input(route.name, "Route name");
   i.classList.add("route-name");
-  i.disabled = !runEditable;
   i.addEventListener("change", async () => {
     const name = i.value.trim() || route.name;
     i.value = name;
@@ -863,7 +815,7 @@ function routeNameInput(route) {
 function nickInput(enc) {
   const i = input(enc?.nickname || "", "Nickname");
   i.classList.add("nick");
-  i.disabled = !enc || !runEditable;
+  i.disabled = !enc;
   i.addEventListener("change", () =>
     patchEncounter(enc, { nickname: i.value.trim() || null }),
   );
@@ -872,14 +824,13 @@ function nickInput(enc) {
 
 function statusSelect(enc) {
   const sel = el("select", "status");
-  sel.disabled = !enc || !runEditable;
+  sel.disabled = !enc;
   const opts = [["", "—"], ...MANUAL_STATUSES.map((s) => [s, STATUS_LABELS[s]])];
   if (enc?.status === "bro_failed") opts.push(["bro_failed", STATUS_LABELS.bro_failed]);
   for (const [v, l] of opts) {
     const o = el("option");
     o.value = v;
     o.textContent = l;
-    // Color each option by its own status (not the selected one).
     o.style.color = STATUS_COLORS[v] || "var(--muted)";
     o.style.backgroundColor = "var(--panel-2)";
     sel.appendChild(o);
@@ -895,17 +846,16 @@ function statusSelect(enc) {
 function encActions(enc) {
   const has = !!enc?.pokemon_id;
   const infoBtn = iconBtn("ℹ️", "Base stats & abilities");
-  infoBtn.disabled = !has || !runEditable;
+  infoBtn.disabled = !has;
   infoBtn.addEventListener("click", () => showInfo(enc));
   const evolveBtn = iconBtn("🧬", "Evolve");
-  evolveBtn.disabled = !has || !runEditable;
+  evolveBtn.disabled = !has;
   evolveBtn.addEventListener("click", () => evolve(enc));
   return [infoBtn, evolveBtn];
 }
 
 function deleteRouteBtn(route) {
   const b = iconBtn("✕", "Delete route", "del");
-  b.disabled = !runEditable;
   b.addEventListener("click", async () => {
     try {
       await api(`/api/routes/${route.id}`, {
@@ -914,7 +864,6 @@ function deleteRouteBtn(route) {
       });
       routes = routes.filter((r) => r.id !== route.id);
       routesArea.querySelector(`[data-route-id="${route.id}"]`)?.remove();
-      refreshSidebar();
     } catch (err) {
       toast(err.message);
     }
@@ -922,7 +871,6 @@ function deleteRouteBtn(route) {
   return b;
 }
 
-/** PUT an encounter change, apply the result (incl. soullink partner), re-render. */
 async function patchEncounter(enc, fields) {
   if (!enc) return;
   try {
@@ -934,7 +882,6 @@ async function patchEncounter(enc, fields) {
     applyEncounter(res.encounter);
     if (res.partner) applyEncounter(res.partner);
     rerenderRoute(enc.route_id);
-    refreshSidebar();
     await recomputeDupes();
   } catch (err) {
     toast(err.message);
@@ -953,7 +900,7 @@ function applyEncounter(e) {
 function buildEncounterPicker(enc, spriteBox) {
   const wrap = el("div", "combo");
   const inp = input(enc?.pokemon_name ? displayName(enc.pokemon_name) : "", "Pick or type…");
-  inp.disabled = !enc || !runEditable;
+  inp.disabled = !enc;
   wrap.appendChild(inp);
 
   let list = null;
@@ -992,13 +939,11 @@ function buildEncounterPicker(enc, spriteBox) {
     }
     if ((entry || rawText) && !enc.status) fields.status = "caught";
     closeList();
-    await patchEncounter(enc, fields); // refreshes dupeInfo
-    // Dupes clause: warn if this entry's evolution line is already an encounter.
+    await patchEncounter(enc, fields);
     if (entry) {
       const info = dupeInfo.get(enc.id);
       if (info) {
-        const run = runs.find((r) => r.id === activeRunId);
-        const who = run?.mode === "soullink" ? ` (${playerLabel(run, info.slot)})` : "";
+        const who = session?.mode === "soullink" ? ` (${playerLabel(info.slot)})` : "";
         toast(
           `⚠️ Dupe! ${entry.display}'s evolution line is already an encounter on ${info.routeName}${who}.`,
         );
@@ -1212,7 +1157,6 @@ async function applyEvolution(enc, entry) {
 // ---- Type effectiveness chart (per generation, from PokeAPI) ----
 let typeInfos = null;
 
-/** Fetch the 18 types once, reduced to a compact per-gen-aware form (cached). */
 async function loadTypeInfos() {
   if (typeInfos) return typeInfos;
   try {
@@ -1246,12 +1190,11 @@ async function loadTypeInfos() {
   try {
     localStorage.setItem(TYPE_CHART_KEY, JSON.stringify(typeInfos));
   } catch {
-    /* quota — fine, memory cache stands */
+    /* quota — fine */
   }
   return typeInfos;
 }
 
-/** Build { types, chart[atk][def] = multiplier } for a generation number. */
 function buildTypeChart(genNum) {
   const gIdx = genNum - 1;
   const gi = (name) => GEN_ORDER.indexOf(name);
@@ -1260,8 +1203,6 @@ function buildTypeChart(genNum) {
   const chart = {};
   for (const info of typeInfos) {
     if (!present.has(info.name)) continue;
-    // Pick the damage relations in effect for this gen: the earliest "past"
-    // entry whose generation is >= the target gen, else the current relations.
     let rel = info.rel;
     const past = info.past
       .map((p) => ({ gi: gi(p.gen), p }))
@@ -1336,7 +1277,6 @@ function renderTypeGrid(container, genNum) {
   container.appendChild(table);
 }
 
-/** Wire the run-page "Type chart" accordion; loads PokeAPI data on first open. */
 function setupTypeChart() {
   const details = $("#type-chart-section");
   const sel = $("#type-gen-select");
@@ -1370,9 +1310,7 @@ function setupTypeChart() {
   });
 }
 
-// ---- Type matchup calculator (defensive coverage of a type duo) ----
-
-/** A lightweight Pokémon search box; calls onPick(entry) on selection. */
+// ---- Type matchup calculator ----
 function buildMatchupPicker(onPick) {
   const wrap = el("div", "combo");
   const inp = input("", "Search a Pokémon…");
@@ -1459,7 +1397,7 @@ const MULT_LABEL = { 4: "×4", 2: "×2", 1: "×1", 0.5: "×½", 0.25: "×¼", 0:
 function renderMatchup(container, chart, t1, t2) {
   const rows = [];
   for (const atk of TYPE_NAMES) {
-    if (!chart[atk]) continue; // attacker not in this chart
+    if (!chart[atk]) continue;
     let m = t1 in chart[atk] ? chart[atk][t1] : 1;
     if (t2 && t2 !== t1) m *= t2 in chart[atk] ? chart[atk][t2] : 1;
     rows.push({ atk, m });
@@ -1477,7 +1415,7 @@ function renderMatchup(container, chart, t1, t2) {
   for (const b of buckets) {
     const matches = rows.filter((r) => b.ms.includes(r.m));
     if (!matches.length) continue;
-    const section = el("div", "mu-group");
+    const sec = el("div", "mu-group");
     const h = el("div", "mu-group-title");
     h.textContent = b.title;
     const chips = el("div", "mu-chips");
@@ -1488,8 +1426,8 @@ function renderMatchup(container, chart, t1, t2) {
       chip.title = `${capitalize(r.atk)}: ${MULT_LABEL[r.m]}`;
       chips.appendChild(chip);
     }
-    section.append(h, chips);
-    groups.appendChild(section);
+    sec.append(h, chips);
+    groups.appendChild(sec);
   }
   container.appendChild(groups);
 }
@@ -1499,7 +1437,6 @@ function colorTypeSelect(sel) {
   sel.style.fontWeight = "600";
 }
 
-/** Wire the run-page "Type matchup" accordion. */
 function setupMatchup() {
   const details = $("#matchup-section");
   const host = $("#matchup-picker");
@@ -1507,7 +1444,6 @@ function setupMatchup() {
   const t2 = $("#mu-type2");
   const result = $("#matchup-result");
 
-  // Color each option by its own type (not the selected one).
   const typeOption = (value, label) => {
     const o = el("option");
     o.value = value;
@@ -1533,7 +1469,7 @@ function setupMatchup() {
       result.innerHTML = `<p class="muted">Loading type data…</p>`;
       try {
         await loadTypeInfos();
-        chart = buildTypeChart(9).chart; // latest chart (all 18 types)
+        chart = buildTypeChart(9).chart;
       } catch {
         result.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
         return;
@@ -1549,7 +1485,7 @@ function setupMatchup() {
         t1.value = detail.types[0] || "normal";
         t2.value = detail.types[1] || "";
       } catch {
-        /* keep current selects */
+        /* keep current */
       }
       render();
     }),
@@ -1562,11 +1498,11 @@ function setupMatchup() {
   });
 }
 
-// ---- New run modal ----
-function openNewRunModal() {
+// ---- New session modal (also used by guest "Continue") ----
+function openNewSessionModal() {
   const form = el("form", "run-form");
   form.innerHTML = `
-    <h3>New run</h3>
+    <h3>New session</h3>
     <label>Name<input name="name" autocomplete="off" required></label>
     <label>Game <span class="muted">(optional)</span><input name="game" autocomplete="off"></label>
     <fieldset class="mode-field">
@@ -1578,15 +1514,8 @@ function openNewRunModal() {
       <label>Player 1<input name="player1" placeholder="Player 1" autocomplete="off"></label>
       <label>Player 2<input name="player2" placeholder="Player 2" autocomplete="off"></label>
     </div>
-    <label>Password <span class="muted">(optional — protects the session)</span>
-      <span class="pw-field">
-        <input name="password" type="password" autocomplete="new-password">
-        <button type="button" class="pw-toggle" aria-label="Show password">👁</button>
-      </span>
-    </label>
-    <button type="submit" class="btn primary">Create run</button>
+    <button type="submit" class="btn primary">Create session</button>
   `;
-  wirePwToggle(form.querySelector(".pw-toggle"));
   form.querySelectorAll('input[name="mode"]').forEach((r) =>
     r.addEventListener("change", () => {
       form.querySelector(".soullink-fields").hidden =
@@ -1599,7 +1528,7 @@ function openNewRunModal() {
     const name = String(fd.get("name") || "").trim();
     if (!name) return;
     try {
-      const run = await api("/api/runs", {
+      const s = await api("/api/sessions", {
         method: "POST",
         body: JSON.stringify({
           name,
@@ -1607,13 +1536,10 @@ function openNewRunModal() {
           mode: fd.get("mode") || "normal",
           player1: String(fd.get("player1") || "").trim(),
           player2: String(fd.get("player2") || "").trim(),
-          password: String(fd.get("password") || ""),
         }),
       });
-      if (run.token) setToken(run.id, run.token);
       closeModal();
-      await loadRuns();
-      await selectRun(run.id);
+      nav(`/s/${s.share_id}`);
     } catch (err) {
       toast(err.message);
     }
@@ -1622,10 +1548,73 @@ function openNewRunModal() {
   form.querySelector('input[name="name"]').focus();
 }
 
-// ---- Top-level actions ----
-$("#new-run-btn").addEventListener("click", openNewRunModal);
-setupTypeChart();
-setupMatchup();
+// ---- Static event wiring (elements exist in the DOM from the start) ----
+$("#guest-btn").addEventListener("click", openNewSessionModal);
+$("#new-session-btn").addEventListener("click", openNewSessionModal);
+$("#logout-btn").addEventListener("click", async () => {
+  try {
+    await fetch("/auth/logout", { method: "POST" });
+  } catch {
+    /* ignore */
+  }
+  me = null;
+  nav("/login");
+});
+$("#back-link").addEventListener("click", (e) => {
+  e.preventDefault();
+  nav("/sessions");
+});
+
+$("#attempt-select").addEventListener("change", async (e) => {
+  activeRunId = Number(e.target.value);
+  await loadRoutesData();
+  loadCaps();
+});
+
+$("#new-run-btn").addEventListener("click", async () => {
+  if (
+    !confirm(
+      "Start a new run? Routes and level caps are copied; encounters start empty.",
+    )
+  )
+    return;
+  try {
+    const run = await api(`/api/sessions/${shareId}/runs`, {
+      method: "POST",
+      headers: runHeaders(),
+    });
+    await reloadAttempts();
+    activeRunId = run.id;
+    renderSessionHeader();
+    await loadRoutesData();
+    loadCaps();
+    toast(`Started run #${run.run_number}.`);
+  } catch (err) {
+    toast(err.message);
+  }
+});
+
+$("#share-btn").addEventListener("click", async () => {
+  const link = `${location.origin}/s/${shareId}`;
+  try {
+    await navigator.clipboard.writeText(link);
+    toast("Share link copied to clipboard.");
+  } catch {
+    toast(link);
+  }
+});
+
+$("#delete-session-btn").addEventListener("click", async () => {
+  if (!session) return;
+  if (!confirm(`Delete "${session.name}" and all its runs? This cannot be undone.`))
+    return;
+  try {
+    await api(`/api/sessions/${shareId}`, { method: "DELETE", headers: runHeaders() });
+    nav(me ? "/sessions" : "/login");
+  } catch (err) {
+    toast(err.message);
+  }
+});
 
 $("#add-cap-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1652,51 +1641,6 @@ $("#add-cap-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("#clone-run-btn").addEventListener("click", async () => {
-  const run = runs.find((r) => r.id === activeRunId);
-  if (!run) return;
-  const extras =
-    run.mode === "soullink"
-      ? ` Player names${run.protected ? " and password" : ""} are kept.`
-      : run.protected
-        ? " The password is kept."
-        : "";
-  if (
-    !confirm(
-      `Start a new run with the same routes as "${run.name}"? ` +
-        `All encounters will be empty.${extras}`,
-    )
-  )
-    return;
-  try {
-    const newRun = await api(`/api/runs/${run.id}/clone`, {
-      method: "POST",
-      headers: runHeaders(),
-    });
-    if (newRun.token) setToken(newRun.id, newRun.token);
-    await loadRuns();
-    await selectRun(newRun.id);
-    toast(`Started "${newRun.name}".`);
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$("#delete-run-btn").addEventListener("click", async () => {
-  const run = runs.find((r) => r.id === activeRunId);
-  if (!run) return;
-  if (!confirm(`Delete "${run.name}" and all its routes? This cannot be undone.`))
-    return;
-  try {
-    await api(`/api/runs/${run.id}`, { method: "DELETE", headers: runHeaders() });
-    activeRunId = null;
-    localStorage.removeItem(ACTIVE_RUN_KEY);
-    await loadRuns();
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
 $("#add-route-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const inp = $("#route-name-input");
@@ -1709,56 +1653,25 @@ $("#add-route-form").addEventListener("submit", async (e) => {
       headers: runHeaders(),
     });
     routes.push(route);
-    renderRoutes(runs.find((r) => r.id === activeRunId));
+    renderRoutes();
     inp.value = "";
     inp.focus();
-    refreshSidebar();
   } catch (err) {
     toast(err.message);
   }
 });
 
-/** Modal to enter the run's password and enable editing. */
-function openUnlockModal() {
-  if (!activeRunId) return;
-  const form = el("form", "run-form");
-  form.innerHTML = `
-    <h3>Unlock to edit</h3>
-    <p class="muted">Enter the run's password to make changes. Viewing stays open without it.</p>
-    <label>Password
-      <span class="pw-field">
-        <input name="password" type="password" autocomplete="off">
-        <button type="button" class="pw-toggle"></button>
-      </span>
-    </label>
-    <button type="submit" class="btn primary">Unlock</button>
-  `;
-  wirePwToggle(form.querySelector(".pw-toggle"));
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const pw = form.querySelector('input[name="password"]').value;
-    try {
-      const res = await api(`/api/runs/${activeRunId}/unlock`, {
-        method: "POST",
-        body: JSON.stringify({ password: pw }),
-      });
-      if (res.token) setToken(activeRunId, res.token);
-      closeModal();
-      await loadActiveRun();
-      toast("Unlocked — you can edit this run now.");
-    } catch {
-      toast("Wrong password");
-    }
-  });
-  openModal(form);
-  form.querySelector('input[name="password"]').focus();
-}
-$("#unlock-btn").addEventListener("click", openUnlockModal);
-$("#unlock-btn2").addEventListener("click", openUnlockModal);
+setupTypeChart();
+setupMatchup();
 
 // ---- Boot ----
 (async () => {
   await loadPokedex();
-  await loadRuns();
+  try {
+    me = (await api("/api/me")).user;
+  } catch {
+    me = null;
+  }
   connectWS();
+  route();
 })();

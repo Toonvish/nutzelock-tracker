@@ -9,106 +9,105 @@
   </head>
   <body>
     <div id="app">
-      <aside id="sidebar">
-        <div class="sidebar-head">
-          <h1><img src="/favicon.svg" class="logo" alt="" /> Nuzlocke</h1>
-          <button id="new-run-btn" class="btn primary">+ New run</button>
+      <!-- ===== Login ===== -->
+      <section id="login-view" class="page" hidden>
+        <div class="login-card">
+          <h1 class="brand"><img src="/favicon.svg" class="logo" alt="" /> Nuzlocke Tracker</h1>
+          <p class="muted">Track your Nuzlocke — solo or co-op Soullink.</p>
+          <a class="btn primary" href="/auth/discord">Log in with Discord</a>
+          <button id="guest-btn" class="btn">Continue as guest</button>
+          <p id="login-error" class="login-error" hidden></p>
         </div>
-        <ul id="run-list" class="run-list"></ul>
-      </aside>
+      </section>
 
-      <main id="main">
-        <div id="empty-state">
-          <p>No run selected.</p>
-          <p class="muted">Create a run on the left to start tracking encounters.</p>
-        </div>
+      <!-- ===== Session list ===== -->
+      <section id="sessions-view" class="page" hidden>
+        <header class="page-head">
+          <h1 class="brand"><img src="/favicon.svg" class="logo" alt="" /> Your runs</h1>
+          <div class="page-head-actions">
+            <span id="user-chip" class="user-chip"></span>
+            <button id="new-session-btn" class="btn primary">+ New session</button>
+            <button id="logout-btn" class="btn">Log out</button>
+          </div>
+        </header>
+        <ul id="sessions-list" class="session-list"></ul>
+        <p id="sessions-empty" class="muted" hidden>
+          No runs yet — create your first session.
+        </p>
+      </section>
 
-        <section id="run-view" hidden>
-          <header class="run-header">
-            <div>
-              <h2 id="run-title"></h2>
-              <p id="run-subtitle" class="muted"></p>
-            </div>
-            <div class="run-header-actions">
-              <span id="sync-dot" class="sync-dot" title="Live sync"></span>
-              <button id="unlock-btn" class="btn" hidden>🔒 Unlock to edit</button>
-              <button
-                id="clone-run-btn"
-                class="btn"
-                title="Start a new run with the same routes &amp; settings — encounters cleared"
-              >
-                ↻ New run (keep routes)
-              </button>
-              <button id="delete-run-btn" class="btn danger">Delete run</button>
-            </div>
-          </header>
+      <!-- ===== Session (full-page run view) ===== -->
+      <main id="session-view" class="page" hidden>
+        <header class="run-header">
+          <div class="run-header-main">
+            <a id="back-link" class="back-link" href="/sessions">← Sessions</a>
+            <h2 id="run-title"></h2>
+            <p id="run-subtitle" class="muted"></p>
+          </div>
+          <div class="run-header-actions">
+            <span id="sync-dot" class="sync-dot" title="Live sync"></span>
+            <label class="attempt-switch"
+              >Run <select id="attempt-select"></select
+            ></label>
+            <button id="new-run-btn" class="btn">+ New run</button>
+            <button id="share-btn" class="btn">Share link</button>
+            <button id="delete-session-btn" class="btn danger">Delete</button>
+          </div>
+        </header>
 
-          <div id="routes-section">
-            <div id="viewonly-banner" class="viewonly" hidden>
-              <span>🔒 View only — this run is password-protected.</span>
-              <button type="button" id="unlock-btn2" class="btn">Unlock to edit</button>
-            </div>
-            <details id="caps-section" class="caps" open>
-              <summary>Level caps</summary>
-              <div id="caps-list" class="caps-list"></div>
-              <form id="add-cap-form" class="add-cap">
-                <input
-                  id="cap-name-input"
-                  type="text"
-                  placeholder="e.g. Brock, Elite Four Lance"
-                  autocomplete="off"
-                />
-                <input
-                  id="cap-level-input"
-                  type="number"
-                  min="1"
-                  max="100"
-                  placeholder="Lv"
-                />
-                <button type="submit" class="btn">+ Add</button>
-              </form>
-            </details>
-
-            <details id="type-chart-section" class="caps">
-              <summary>⚡ Type chart</summary>
-              <div class="tc-controls">
-                <label>Generation
-                  <select id="type-gen-select"></select>
-                </label>
-              </div>
-              <p class="muted tc-note">
-                Rows attack, columns defend. 2× super-effective, ½ resisted, 0 no effect.
-              </p>
-              <div id="type-grid" class="tc-grid"></div>
-            </details>
-
-            <details id="matchup-section" class="caps">
-              <summary>⚔️ Type matchup</summary>
-              <div class="matchup-controls">
-                <div id="matchup-picker"></div>
-                <select id="mu-type1" title="Primary type"></select>
-                <select id="mu-type2" title="Secondary type (or none)"></select>
-              </div>
-              <p class="muted tc-note">
-                Pick a Pokémon to prefill its types, or set them yourself (rom hacks).
-                Shows how each attacking type fares against the duo.
-              </p>
-              <div id="matchup-result" class="matchup-result"></div>
-            </details>
-
-            <form id="add-route-form" class="add-route">
+        <div id="routes-section">
+          <details id="caps-section" class="caps" open>
+            <summary>Level caps</summary>
+            <div id="caps-list" class="caps-list"></div>
+            <form id="add-cap-form" class="add-cap">
               <input
-                id="route-name-input"
+                id="cap-name-input"
                 type="text"
-                placeholder="Add a route (e.g. Route 1, Viridian Forest)…"
+                placeholder="e.g. Brock, Elite Four Lance"
                 autocomplete="off"
               />
-              <button type="submit" class="btn primary">+ Add route</button>
+              <input id="cap-level-input" type="number" min="1" max="100" placeholder="Lv" />
+              <button type="submit" class="btn">+ Add</button>
             </form>
+          </details>
 
-            <div id="routes-area"></div>
-          </div>
-        </section>
+          <details id="type-chart-section" class="caps">
+            <summary>⚡ Type chart</summary>
+            <div class="tc-controls">
+              <label>Generation <select id="type-gen-select"></select></label>
+            </div>
+            <p class="muted tc-note">
+              Rows attack, columns defend. 2× super-effective, ½ resisted, 0 no effect.
+            </p>
+            <div id="type-grid" class="tc-grid"></div>
+          </details>
+
+          <details id="matchup-section" class="caps">
+            <summary>⚔️ Type matchup</summary>
+            <div class="matchup-controls">
+              <div id="matchup-picker"></div>
+              <select id="mu-type1" title="Primary type"></select>
+              <select id="mu-type2" title="Secondary type (or none)"></select>
+            </div>
+            <p class="muted tc-note">
+              Pick a Pokémon to prefill its types, or set them yourself (rom hacks).
+              Shows how each attacking type fares against the duo.
+            </p>
+            <div id="matchup-result" class="matchup-result"></div>
+          </details>
+
+          <form id="add-route-form" class="add-route">
+            <input
+              id="route-name-input"
+              type="text"
+              placeholder="Add a route (e.g. Route 1, Viridian Forest)…"
+              autocomplete="off"
+            />
+            <button type="submit" class="btn primary">+ Add route</button>
+          </form>
+
+          <div id="routes-area"></div>
+        </div>
       </main>
     </div>
 

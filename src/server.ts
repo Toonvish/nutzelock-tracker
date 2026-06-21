@@ -1,32 +1,46 @@
-// Bun HTTP + WebSocket server: JSON API, static frontend, and live sync.
-// Binds to 0.0.0.0 so two players on the same network can play together.
+// Bun HTTP + WebSocket server.
+//  - Discord OAuth login (stateless signed cookie).
+//  - Sessions (owned by a user or guest) reached by owner or by share_id.
+//  - A session has runs (attempts); each run owns routes/encounters/level caps.
+//  - Live sync over WebSocket per session.
+import { createHmac, timingSafeEqual } from "node:crypto";
+import type { Server, ServerWebSocket } from "bun";
 import {
   STATUSES,
   MODES,
   type Status,
   type Mode,
-  type RunRow,
+  type SessionRow,
+  upsertUser,
+  getUser,
+  listSessionsForUser,
+  getSessionByShareId,
+  getSessionById,
+  createSession,
+  updateSession,
+  deleteSession,
+  touchSession,
+  cleanupGuestSessions,
   listRuns,
-  getRun,
-  createRun,
-  updateRun,
-  deleteRun,
-  cloneRun,
+  createNextRun,
+  getRunSessionId,
   listRoutes,
   createRoute,
   updateRouteName,
   deleteRoute,
   reorderRoutes,
   getRouteRunId,
+  getRouteSessionId,
   getEncounterRunId,
+  getEncounterSessionId,
   updateEncounter,
   listLevelCaps,
   createLevelCap,
   updateLevelCap,
   deleteLevelCap,
   getLevelCapRunId,
+  getLevelCapSessionId,
 } from "./db.ts";
-import type { Server, ServerWebSocket } from "bun";
 // Embed the frontend so `bun build --compile` yields a single executable.
 import indexHtml from "../public/index.html" with { type: "file" };
 import appJs from "../public/app.js" with { type: "file" };
@@ -34,6 +48,10 @@ import stylesCss from "../public/styles.css" with { type: "file" };
 import faviconSvg from "../public/favicon.svg" with { type: "file" };
 
 const PORT = Number(process.env.PORT ?? 3001);
+const SESSION_SECRET = process.env.SESSION_SECRET ?? "dev-insecure-secret-change-me";
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
+const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET;
+const COOKIE_DAYS = 60;
 
 const ASSETS: Record<string, { path: string; type: string }> = {
   "/": { path: indexHtml, type: "text/html; charset=utf-8" },
@@ -43,13 +61,20 @@ const ASSETS: Record<string, { path: string; type: string }> = {
   "/favicon.svg": { path: faviconSvg, type: "image/svg+xml" },
 };
 
-const json = (data: unknown, status = 200) =>
+// ---- response helpers ----
+const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
-
 const bad = (msg: string, status = 400) => json({ error: msg }, status);
+const redirect = (location: string, setCookie?: string) =>
+  new Response(null, {
+    status: 302,
+    headers: setCookie
+      ? { location, "set-cookie": setCookie }
+      : { location },
+  });
 
 function isStatus(v: unknown): v is Status {
   return typeof v === "string" && (STATUSES as readonly string[]).includes(v);
@@ -62,68 +87,196 @@ function optStr(v: unknown): string | null {
   const t = v.trim();
   return t === "" ? null : t;
 }
-
-/** Parse a level-cap value to an int in 1..100, or null. */
 function capLevel(v: unknown): number | null {
   const n = typeof v === "number" ? v : Number(v);
   return Number.isFinite(n) && n > 0 ? Math.min(100, Math.round(n)) : null;
 }
 
-/** Derive a unique "<base> #N" name for a cloned run. */
-async function cloneName(baseName: string): Promise<string> {
-  const stem = baseName.replace(/\s+#\d+$/, "").trim();
-  const re = new RegExp(
-    `^${stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\s+#(\\d+))?$`,
-  );
-  let max = 1;
-  for (const r of await listRuns()) {
-    const m = r.name.match(re);
-    if (m) max = Math.max(max, m[1] ? Number(m[1]) : 1);
+// ---- cookies + signed auth ----
+function parseCookies(req: Request): Record<string, string> {
+  const out: Record<string, string> = {};
+  const raw = req.headers.get("cookie");
+  if (!raw) return out;
+  for (const part of raw.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
   }
-  return `${stem} #${max + 1}`;
+  return out;
+}
+function sign(body: string): string {
+  return createHmac("sha256", SESSION_SECRET).update(body).digest("base64url");
+}
+function signPayload(payload: object): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  return `${body}.${sign(body)}`;
+}
+function verifyPayload(value: string | undefined): any | null {
+  if (!value) return null;
+  const dot = value.lastIndexOf(".");
+  if (dot < 0) return null;
+  const body = value.slice(0, dot);
+  const sig = value.slice(dot + 1);
+  const expected = sign(body);
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString());
+    if (payload.exp && payload.exp < Date.now() / 1000) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+function cookieStr(
+  name: string,
+  value: string,
+  opts: { secure?: boolean; maxAge?: number; clear?: boolean } = {},
+): string {
+  let s = `${name}=${value}; Path=/; HttpOnly; SameSite=Lax`;
+  if (opts.secure) s += "; Secure";
+  if (opts.clear) s += "; Max-Age=0";
+  else if (opts.maxAge) s += `; Max-Age=${opts.maxAge}`;
+  return s;
 }
 
-// ---- Access tokens for password-protected runs (in-memory) ----
-const runTokens = new Map<number, Set<string>>();
-
-function issueToken(runId: number): string {
-  const token = crypto.randomUUID();
-  if (!runTokens.has(runId)) runTokens.set(runId, new Set());
-  runTokens.get(runId)!.add(token);
-  return token;
-}
-function hasAccess(run: RunRow, token: string | null): boolean {
-  if (!run.password_hash) return true; // open run
-  return !!token && !!runTokens.get(run.id)?.has(token);
+async function currentUser(req: Request) {
+  const payload = verifyPayload(parseCookies(req).nuzlocke_auth);
+  if (!payload?.uid) return null;
+  return getUser(payload.uid);
 }
 
-// `null` = authorized; otherwise a 401 response to return.
-function authGuard(run: RunRow | null, token: string | null): Response | null {
-  if (!run) return bad("not found", 404);
-  if (!hasAccess(run, token)) return bad("locked", 401);
+function originOf(req: Request): string {
+  const url = new URL(req.url);
+  const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
+  const host = req.headers.get("host") || url.host;
+  return `${proto}://${host}`;
+}
+
+// ---- session access (capability = share_id, or ownership) ----
+async function sessionAccess(
+  req: Request,
+  sessionId: number | null,
+): Promise<SessionRow | null> {
+  if (sessionId == null) return null;
+  const session = await getSessionById(sessionId);
+  if (!session) return null;
+  const shareId = req.headers.get("x-share-id");
+  if (shareId && shareId === session.share_id) return session;
+  const user = await currentUser(req);
+  if (user && session.owner_user_id === user.id) return session;
   return null;
 }
 
-// ---- Live sync ----
+// ---- live sync ----
 let server: Server;
-function broadcastRoutes(runId: number) {
-  server?.publish(`run:${runId}`, JSON.stringify({ type: "routes", runId }));
+function publish(shareId: string, msg: object) {
+  server?.publish(`session:${shareId}`, JSON.stringify(msg));
 }
-function broadcastRuns() {
-  server?.publish("runs", JSON.stringify({ type: "runs" }));
-}
-function broadcastCaps(runId: number) {
-  server?.publish(`run:${runId}`, JSON.stringify({ type: "caps", runId }));
-}
-
 interface WsData {
-  runId: number | null;
+  topic: string | null;
 }
 
+// ---- Discord OAuth ----
+async function handleAuth(req: Request, url: URL): Promise<Response> {
+  const path = url.pathname;
+
+  if (path === "/auth/discord") {
+    if (!DISCORD_CLIENT_ID)
+      return new Response("Discord login is not configured on this server.", {
+        status: 503,
+      });
+    const state = crypto.randomUUID();
+    const redirectUri =
+      process.env.DISCORD_REDIRECT_URI || `${originOf(req)}/auth/discord/callback`;
+    const authorize = new URL("https://discord.com/oauth2/authorize");
+    authorize.searchParams.set("client_id", DISCORD_CLIENT_ID);
+    authorize.searchParams.set("redirect_uri", redirectUri);
+    authorize.searchParams.set("response_type", "code");
+    authorize.searchParams.set("scope", "identify");
+    authorize.searchParams.set("state", state);
+    return redirect(
+      authorize.toString(),
+      cookieStr("nuzlocke_oauth_state", state, {
+        secure: originOf(req).startsWith("https"),
+        maxAge: 600,
+      }),
+    );
+  }
+
+  if (path === "/auth/discord/callback") {
+    if (!DISCORD_CLIENT_ID || !DISCORD_CLIENT_SECRET)
+      return new Response("Discord login is not configured.", { status: 503 });
+    const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state");
+    const cookieState = parseCookies(req).nuzlocke_oauth_state;
+    if (!code || !state || state !== cookieState)
+      return redirect("/login?error=auth");
+    const redirectUri =
+      process.env.DISCORD_REDIRECT_URI || `${originOf(req)}/auth/discord/callback`;
+    try {
+      const tokenRes = await fetch("https://discord.com/api/oauth2/token", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: DISCORD_CLIENT_ID,
+          client_secret: DISCORD_CLIENT_SECRET,
+          grant_type: "authorization_code",
+          code,
+          redirect_uri: redirectUri,
+        }),
+      });
+      if (!tokenRes.ok) return redirect("/login?error=token");
+      const { access_token } = (await tokenRes.json()) as { access_token: string };
+      const meRes = await fetch("https://discord.com/api/users/@me", {
+        headers: { authorization: `Bearer ${access_token}` },
+      });
+      if (!meRes.ok) return redirect("/login?error=me");
+      const me = (await meRes.json()) as {
+        id: string;
+        username: string;
+        global_name?: string;
+        avatar?: string | null;
+      };
+      const user = await upsertUser({
+        provider: "discord",
+        providerId: me.id,
+        name: me.global_name || me.username,
+        avatarUrl: me.avatar
+          ? `https://cdn.discordapp.com/avatars/${me.id}/${me.avatar}.png`
+          : null,
+      });
+      const token = signPayload({
+        uid: user.id,
+        exp: Math.floor(Date.now() / 1000) + COOKIE_DAYS * 86400,
+      });
+      return redirect(
+        "/sessions",
+        cookieStr("nuzlocke_auth", token, {
+          secure: originOf(req).startsWith("https"),
+          maxAge: COOKIE_DAYS * 86400,
+        }),
+      );
+    } catch {
+      return redirect("/login?error=exception");
+    }
+  }
+
+  if (path === "/auth/logout") {
+    return redirect(
+      "/login",
+      cookieStr("nuzlocke_auth", "", { clear: true }),
+    );
+  }
+
+  return bad("not found", 404);
+}
+
+// ---- JSON API ----
 async function handleApi(req: Request, url: URL): Promise<Response> {
   const path = url.pathname;
   const method = req.method;
-  const token = req.headers.get("x-run-token");
   const body = async () => {
     try {
       return (await req.json()) as Record<string, unknown>;
@@ -131,146 +284,63 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
       return {} as Record<string, unknown>;
     }
   };
-  const idFromPath = (prefix: string) =>
-    Number(path.slice(prefix.length).split("/")[0]);
+  const seg = (i: number) => path.split("/")[i] ?? "";
+  const numSeg = (i: number) => Number(seg(i));
 
-  // --- Runs ---
-  if (path === "/api/runs" && method === "GET") {
-    return json(await listRuns());
+  // --- who am I ---
+  if (path === "/api/me" && method === "GET") {
+    const user = await currentUser(req);
+    return json({
+      user: user
+        ? { id: user.id, name: user.name, avatar_url: user.avatar_url }
+        : null,
+    });
   }
-  if (path === "/api/runs" && method === "POST") {
+
+  // --- sessions list (owner only) ---
+  if (path === "/api/sessions" && method === "GET") {
+    const user = await currentUser(req);
+    if (!user) return bad("login required", 401);
+    return json(await listSessionsForUser(user.id));
+  }
+  // --- create session ---
+  if (path === "/api/sessions" && method === "POST") {
     const b = await body();
     const name = String(b.name ?? "").trim();
     if (!name) return bad("name required");
     const mode = isMode(b.mode) ? b.mode : "normal";
-    const password = optStr(b.password);
-    const passwordHash = password ? Bun.password.hashSync(password) : null;
-    const run = await createRun({
+    const user = await currentUser(req);
+    const session = await createSession({
       name,
       game: optStr(b.game),
       mode,
       player1: mode === "soullink" ? optStr(b.player1) ?? "Player 1" : null,
       player2: mode === "soullink" ? optStr(b.player2) ?? "Player 2" : null,
-      passwordHash,
+      ownerUserId: user?.id ?? null,
     });
-    broadcastRuns();
-    // Give the creator an access token so they don't have to re-enter it.
-    const out: Record<string, unknown> = { ...run, password_hash: undefined };
-    if (passwordHash) out.token = issueToken(run.id);
-    return json(out, 201);
+    return json(session, 201);
   }
 
-  // --- Unlock a protected run ---
-  if (path.startsWith("/api/runs/") && path.endsWith("/unlock") && method === "POST") {
-    const id = idFromPath("/api/runs/");
-    const run = await getRun(id);
-    if (!run) return bad("not found", 404);
-    if (!run.password_hash) return json({ token: null }); // not protected
-    const b = await body();
-    const password = String(b.password ?? "");
-    if (!Bun.password.verifySync(password, run.password_hash))
-      return bad("wrong password", 401);
-    return json({ token: issueToken(id) });
-  }
+  // --- a specific session by share id ---
+  if (path.startsWith("/api/sessions/")) {
+    const shareId = seg(3);
+    const session = await getSessionByShareId(shareId);
+    if (!session) return bad("not found", 404);
+    const access = await sessionAccess(req, session.id);
 
-  // --- Clone a run: same routes + settings, empty encounters ---
-  if (path.startsWith("/api/runs/") && path.endsWith("/clone") && method === "POST") {
-    const id = idFromPath("/api/runs/");
-    const run = await getRun(id);
-    const denied = authGuard(run, token);
-    if (denied) return denied;
-    const newRun = await cloneRun(id, await cloneName(run!.name));
-    if (!newRun) return bad("not found", 404);
-    broadcastRuns();
-    const out: Record<string, unknown> = { ...newRun, password_hash: undefined };
-    if (newRun.password_hash) out.token = issueToken(newRun.id);
-    return json(out, 201);
-  }
-
-  // --- Routes of a run (viewing is open; creating requires the password) ---
-  if (path.startsWith("/api/runs/") && path.endsWith("/routes")) {
-    const id = idFromPath("/api/runs/");
-    const run = await getRun(id);
-    if (!run) return bad("not found", 404);
-    if (method === "GET") return json(await listRoutes(id));
-    if (method === "POST") {
-      const denied = authGuard(run, token);
-      if (denied) return denied;
-      const b = await body();
-      const name = String(b.name ?? "").trim();
-      if (!name) return bad("route name required");
-      const route = await createRoute(id, name);
-      broadcastRoutes(id);
-      broadcastRuns();
-      return json(route, 201);
+    // GET meta + attempts (open to anyone who has the share id)
+    if (path === `/api/sessions/${shareId}` && method === "GET") {
+      await touchSession(session.id);
+      const user = await currentUser(req);
+      return json({
+        session,
+        runs: await listRuns(session.id),
+        isOwner: !!user && session.owner_user_id === user.id,
+      });
     }
-  }
+    if (!access) return bad("no access", 403);
 
-  // --- Level caps of a run (viewing open; adding requires the password) ---
-  if (path.startsWith("/api/runs/") && path.endsWith("/level-caps")) {
-    const id = idFromPath("/api/runs/");
-    const run = await getRun(id);
-    if (!run) return bad("not found", 404);
-    if (method === "GET") return json(await listLevelCaps(id));
-    if (method === "POST") {
-      const denied = authGuard(run, token);
-      if (denied) return denied;
-      const b = await body();
-      const name = String(b.name ?? "").trim();
-      if (!name) return bad("name required");
-      const cap = await createLevelCap(id, name, capLevel(b.level));
-      broadcastCaps(id);
-      return json(cap, 201);
-    }
-  }
-
-  // --- Level cap update / delete ---
-  if (path.startsWith("/api/level-caps/") && (method === "PUT" || method === "DELETE")) {
-    const id = idFromPath("/api/level-caps/");
-    const runId = await getLevelCapRunId(id);
-    const denied = authGuard(runId ? await getRun(runId) : null, token);
-    if (denied) return denied;
-    if (method === "PUT") {
-      const b = await body();
-      const fields: Parameters<typeof updateLevelCap>[1] = {};
-      if ("name" in b) {
-        const name = String(b.name ?? "").trim();
-        if (!name) return bad("name cannot be empty");
-        fields.name = name;
-      }
-      if ("level" in b) fields.level = capLevel(b.level);
-      if ("cleared" in b) fields.cleared = b.cleared ? 1 : 0;
-      const row = await updateLevelCap(id, fields);
-      if (runId) broadcastCaps(runId);
-      return row ? json(row) : bad("not found", 404);
-    }
-    await deleteLevelCap(id);
-    if (runId) broadcastCaps(runId);
-    return json({ ok: true });
-  }
-
-  // --- Reorder a run's routes ---
-  if (path.startsWith("/api/runs/") && path.endsWith("/reorder") && method === "PUT") {
-    const id = idFromPath("/api/runs/");
-    const run = await getRun(id);
-    const denied = authGuard(run, token);
-    if (denied) return denied;
-    const b = await body();
-    const order = Array.isArray(b.order)
-      ? b.order.filter((x): x is number => typeof x === "number")
-      : [];
-    await reorderRoutes(id, order);
-    broadcastRoutes(id);
-    return json({ ok: true });
-  }
-
-  // --- Run rename / delete ---
-  if (path.startsWith("/api/runs/") && (method === "PUT" || method === "DELETE")) {
-    const id = idFromPath("/api/runs/");
-    const run = await getRun(id);
-    const denied = authGuard(run, token);
-    if (denied) return denied;
-    if (method === "PUT") {
+    if (path === `/api/sessions/${shareId}` && method === "PUT") {
       const b = await body();
       const fields: { name?: string; game?: string | null } = {};
       if ("name" in b) {
@@ -279,44 +349,93 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
         fields.name = name;
       }
       if ("game" in b) fields.game = optStr(b.game);
-      const updated = await updateRun(id, fields);
-      broadcastRuns();
+      const updated = await updateSession(session.id, fields);
+      publish(shareId, { type: "session" });
       return updated ? json(updated) : bad("not found", 404);
     }
-    await deleteRun(id);
-    runTokens.delete(id);
-    broadcastRuns();
-    return json({ ok: true });
+    if (path === `/api/sessions/${shareId}` && method === "DELETE") {
+      await deleteSession(session.id);
+      return json({ ok: true });
+    }
+    if (path === `/api/sessions/${shareId}/runs` && method === "POST") {
+      const run = await createNextRun(session.id);
+      publish(shareId, { type: "session" });
+      return run ? json(run, 201) : bad("not found", 404);
+    }
+    return bad("not found", 404);
   }
 
-  // --- Route rename / delete ---
+  // --- run-scoped: routes & level caps ---
+  if (path.startsWith("/api/runs/")) {
+    const runId = numSeg(3);
+    const tail = seg(4);
+    const session = await sessionAccess(req, await getRunSessionId(runId));
+    if (tail === "routes") {
+      if (method === "GET") {
+        // viewing routes also requires access (the share id) now
+        if (!session) return bad("no access", 403);
+        return json(await listRoutes(runId));
+      }
+      if (method === "POST") {
+        if (!session) return bad("no access", 403);
+        const b = await body();
+        const name = String(b.name ?? "").trim();
+        if (!name) return bad("route name required");
+        const route = await createRoute(runId, name);
+        publish(session.share_id, { type: "routes", runId });
+        return json(route, 201);
+      }
+    }
+    if (tail === "level-caps") {
+      if (!session) return bad("no access", 403);
+      if (method === "GET") return json(await listLevelCaps(runId));
+      if (method === "POST") {
+        const b = await body();
+        const name = String(b.name ?? "").trim();
+        if (!name) return bad("name required");
+        const cap = await createLevelCap(runId, name, capLevel(b.level));
+        publish(session.share_id, { type: "caps", runId });
+        return json(cap, 201);
+      }
+    }
+    if (tail === "reorder" && method === "PUT") {
+      if (!session) return bad("no access", 403);
+      const b = await body();
+      const order = Array.isArray(b.order)
+        ? b.order.filter((x): x is number => typeof x === "number")
+        : [];
+      await reorderRoutes(runId, order);
+      publish(session.share_id, { type: "routes", runId });
+      return json({ ok: true });
+    }
+    return bad("not found", 404);
+  }
+
+  // --- route rename / delete ---
   if (path.startsWith("/api/routes/") && (method === "PUT" || method === "DELETE")) {
-    const id = idFromPath("/api/routes/");
+    const id = numSeg(3);
+    const session = await sessionAccess(req, await getRouteSessionId(id));
+    if (!session) return bad("no access", 403);
     const runId = await getRouteRunId(id);
-    const denied = authGuard(runId ? await getRun(runId) : null, token);
-    if (denied) return denied;
     if (method === "PUT") {
       const b = await body();
       const name = String(b.name ?? "").trim();
       if (!name) return bad("route name cannot be empty");
       const row = await updateRouteName(id, name);
-      if (runId) broadcastRoutes(runId);
+      if (runId) publish(session.share_id, { type: "routes", runId });
       return row ? json(row) : bad("not found", 404);
     }
     await deleteRoute(id);
-    if (runId) {
-      broadcastRoutes(runId);
-      broadcastRuns();
-    }
+    if (runId) publish(session.share_id, { type: "routes", runId });
     return json({ ok: true });
   }
 
-  // --- Encounter update (the live-synced, soullink-aware edit) ---
+  // --- encounter update (live-synced, soullink-aware) ---
   if (path.startsWith("/api/encounters/") && method === "PUT") {
-    const id = idFromPath("/api/encounters/");
+    const id = numSeg(3);
+    const session = await sessionAccess(req, await getEncounterSessionId(id));
+    if (!session) return bad("no access", 403);
     const runId = await getEncounterRunId(id);
-    const denied = authGuard(runId ? await getRun(runId) : null, token);
-    if (denied) return denied;
     const b = await body();
     const fields: Parameters<typeof updateEncounter>[1] = {};
     if ("pokemon_id" in b)
@@ -334,18 +453,40 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     }
     const res = await updateEncounter(id, fields);
     if (!res) return bad("not found", 404);
-    if (runId) {
-      broadcastRoutes(runId);
-      broadcastRuns();
-    }
+    if (runId) publish(session.share_id, { type: "routes", runId });
     return json(res);
+  }
+
+  // --- level cap update / delete ---
+  if (path.startsWith("/api/level-caps/") && (method === "PUT" || method === "DELETE")) {
+    const id = numSeg(3);
+    const session = await sessionAccess(req, await getLevelCapSessionId(id));
+    if (!session) return bad("no access", 403);
+    const runId = await getLevelCapRunId(id);
+    if (method === "PUT") {
+      const b = await body();
+      const fields: Parameters<typeof updateLevelCap>[1] = {};
+      if ("name" in b) {
+        const name = String(b.name ?? "").trim();
+        if (!name) return bad("name cannot be empty");
+        fields.name = name;
+      }
+      if ("level" in b) fields.level = capLevel(b.level);
+      if ("cleared" in b) fields.cleared = b.cleared ? 1 : 0;
+      const row = await updateLevelCap(id, fields);
+      if (runId) publish(session.share_id, { type: "caps", runId });
+      return row ? json(row) : bad("not found", 404);
+    }
+    await deleteLevelCap(id);
+    if (runId) publish(session.share_id, { type: "caps", runId });
+    return json({ ok: true });
   }
 
   return bad("not found", 404);
 }
 
 function serveStatic(url: URL): Response {
-  const asset = ASSETS[url.pathname] ?? ASSETS["/"]; // SPA fallback
+  const asset = ASSETS[url.pathname] ?? ASSETS["/"]; // SPA fallback for client routes
   return new Response(Bun.file(asset.path), {
     headers: { "content-type": asset.type },
   });
@@ -357,12 +498,13 @@ server = Bun.serve<WsData>({
   async fetch(req, srv) {
     const url = new URL(req.url);
     if (url.pathname === "/ws") {
-      return srv.upgrade(req, { data: { runId: null } })
+      return srv.upgrade(req, { data: { topic: null } })
         ? undefined
         : new Response("websocket upgrade failed", { status: 400 });
     }
     try {
       if (url.pathname.startsWith("/api/")) return await handleApi(req, url);
+      if (url.pathname.startsWith("/auth/")) return await handleAuth(req, url);
       return serveStatic(url);
     } catch (err) {
       console.error(err);
@@ -370,29 +512,31 @@ server = Bun.serve<WsData>({
     }
   },
   websocket: {
-    open(ws: ServerWebSocket<WsData>) {
-      ws.subscribe("runs"); // sidebar/run-list changes
-    },
+    open() {},
     async message(ws: ServerWebSocket<WsData>, raw) {
-      let msg: { op?: string; runId?: number; token?: string };
+      let msg: { op?: string; shareId?: string };
       try {
         msg = JSON.parse(String(raw));
       } catch {
         return;
       }
-      if (msg.op === "watch" && typeof msg.runId === "number") {
-        if (!(await getRun(msg.runId))) return; // viewing is open — no token needed
-        if (ws.data.runId) ws.unsubscribe(`run:${ws.data.runId}`);
-        ws.data.runId = msg.runId;
-        ws.subscribe(`run:${msg.runId}`);
+      if (msg.op === "watch" && typeof msg.shareId === "string") {
+        if (!(await getSessionByShareId(msg.shareId))) return;
+        if (ws.data.topic) ws.unsubscribe(ws.data.topic);
+        ws.data.topic = `session:${msg.shareId}`;
+        ws.subscribe(ws.data.topic);
       }
     },
     close() {},
   },
 });
 
+// Periodically delete ownerless sessions untouched for 30 days.
+cleanupGuestSessions().catch(() => {});
+setInterval(() => cleanupGuestSessions().catch(() => {}), 6 * 3600 * 1000);
+
 console.log(`\n🎮  Custom Nuzlocke Tracker running`);
 console.log(`    Local:   http://localhost:${server.port}`);
 console.log(
-  `    Network: http://<your-LAN-ip>:${server.port}  (share with your soullink partner)\n`,
+  `    Discord login: ${DISCORD_CLIENT_ID ? "configured" : "NOT configured (set DISCORD_CLIENT_ID/SECRET)"}\n`,
 );

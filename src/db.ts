@@ -2,6 +2,10 @@
 // in development and a Turso database in production — same code, same SQL.
 //   - Set TURSO_DATABASE_URL (+ TURSO_AUTH_TOKEN) to use Turso.
 //   - Otherwise it falls back to a local file (NUZLOCKE_DB, default data/nuzlocke.db).
+//
+// Hierarchy: users own sessions; a session contains runs (attempts); a run owns
+// routes -> encounters and level_caps. A session is reached by its owner or by
+// anyone holding its unguessable share_id.
 import { createClient, type Client } from "@libsql/client";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -51,32 +55,34 @@ async function exec(sql: string, args: any[] = []): Promise<void> {
   await client().execute({ sql, args });
 }
 
-async function columnNames(c: Client, table: string): Promise<string[]> {
-  const r = await c.execute(`PRAGMA table_info(${table})`);
-  return r.rows.map((row: any) => row.name as string);
-}
-async function addColumnIfMissing(
-  c: Client,
-  table: string,
-  col: string,
-  def: string,
-) {
-  if (!(await columnNames(c, table)).includes(col))
-    await c.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
-}
-
 async function migrate(): Promise<void> {
-  const c = client();
-  await c.executeMultiple(`
+  await client().executeMultiple(`
+    CREATE TABLE IF NOT EXISTS users (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      provider    TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      name        TEXT,
+      avatar_url  TEXT,
+      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(provider, provider_id)
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      share_id       TEXT NOT NULL UNIQUE,
+      name           TEXT NOT NULL,
+      game           TEXT,
+      mode           TEXT NOT NULL DEFAULT 'normal',
+      player1        TEXT,
+      player2        TEXT,
+      owner_user_id  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      last_access_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
     CREATE TABLE IF NOT EXISTS runs (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT NOT NULL,
-      game          TEXT,
-      mode          TEXT NOT NULL DEFAULT 'normal',
-      player1       TEXT,
-      player2       TEXT,
-      password_hash TEXT,
-      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      run_number INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE TABLE IF NOT EXISTS routes (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,108 +112,113 @@ async function migrate(): Promise<void> {
       cleared    INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE INDEX IF NOT EXISTS idx_sessions_owner ON sessions(owner_user_id);
+    CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
     CREATE INDEX IF NOT EXISTS idx_routes_run ON routes(run_id);
     CREATE INDEX IF NOT EXISTS idx_encounters_route ON encounters(route_id);
     CREATE INDEX IF NOT EXISTS idx_caps_run ON level_caps(run_id);
   `);
-
-  // Upgrade older `runs` tables created before soullink/password existed.
-  await addColumnIfMissing(c, "runs", "mode", "TEXT NOT NULL DEFAULT 'normal'");
-  await addColumnIfMissing(c, "runs", "player1", "TEXT");
-  await addColumnIfMissing(c, "runs", "player2", "TEXT");
-  await addColumnIfMissing(c, "runs", "password_hash", "TEXT");
-
-  // Migrate legacy inline encounter columns from `routes` into `encounters`.
-  const routeCols = await columnNames(c, "routes");
-  if (routeCols.includes("status") || routeCols.includes("pokemon_id")) {
-    await c.execute(`
-      INSERT INTO encounters (route_id, slot, pokemon_id, pokemon_name, sprite_url, nickname, status)
-      SELECT id, 0, pokemon_id, pokemon_name, sprite_url, nickname, status FROM routes
-      WHERE (pokemon_id IS NOT NULL OR pokemon_name IS NOT NULL OR nickname IS NOT NULL OR status IS NOT NULL)
-        AND id NOT IN (SELECT route_id FROM encounters WHERE slot = 0)`);
-    await c.execute(`
-      INSERT INTO encounters (route_id, slot)
-      SELECT id, 0 FROM routes WHERE id NOT IN (SELECT route_id FROM encounters WHERE slot = 0)`);
-    for (const col of ["pokemon_id", "pokemon_name", "sprite_url", "nickname", "status"]) {
-      if ((await columnNames(c, "routes")).includes(col))
-        await c.execute(`ALTER TABLE routes DROP COLUMN ${col}`);
-    }
-  }
 }
 
-// ---- Runs --------------------------------------------------------------
+// ---- Users -------------------------------------------------------------
 
-export interface RunRow {
+export interface UserRow {
   id: number;
-  name: string;
-  game: string | null;
-  mode: Mode;
-  player1: string | null;
-  player2: string | null;
-  password_hash: string | null;
+  provider: string;
+  provider_id: string;
+  name: string | null;
+  avatar_url: string | null;
   created_at: string;
 }
 
-export interface RunSummary {
-  id: number;
-  name: string;
-  game: string | null;
-  mode: Mode;
-  player1: string | null;
-  player2: string | null;
-  protected: boolean;
-  created_at: string;
-  routes: number;
-  caught: number;
-  boxed: number;
-  fainted: number;
-  missed: number;
-  bro_failed: number;
-}
-
-export async function listRuns(): Promise<RunSummary[]> {
-  const rows = await all(
-    `SELECT r.id, r.name, r.game, r.mode, r.player1, r.player2,
-            (r.password_hash IS NOT NULL) AS prot,
-            r.created_at,
-            COUNT(DISTINCT rt.id)                    AS routes,
-            COALESCE(SUM(e.status = 'caught'),0)     AS caught,
-            COALESCE(SUM(e.status = 'boxed'),0)      AS boxed,
-            COALESCE(SUM(e.status = 'fainted'),0)    AS fainted,
-            COALESCE(SUM(e.status = 'missed'),0)     AS missed,
-            COALESCE(SUM(e.status = 'bro_failed'),0) AS bro_failed
-     FROM runs r
-     LEFT JOIN routes rt ON rt.run_id = r.id
-     LEFT JOIN encounters e ON e.route_id = rt.id
-     GROUP BY r.id
-     ORDER BY r.created_at DESC, r.id DESC`,
-  );
-  return rows.map(({ prot, ...r }) => ({ ...r, protected: !!prot }) as RunSummary);
-}
-
-export async function getRun(id: number): Promise<RunRow | null> {
-  return (await one("SELECT * FROM runs WHERE id = ?", [id])) as RunRow | null;
-}
-
-export async function createRun(r: {
-  name: string;
-  game: string | null;
-  mode: Mode;
-  player1: string | null;
-  player2: string | null;
-  passwordHash: string | null;
-}): Promise<RunRow> {
+export async function upsertUser(u: {
+  provider: string;
+  providerId: string;
+  name: string | null;
+  avatarUrl: string | null;
+}): Promise<UserRow> {
   return (await one(
-    `INSERT INTO runs (name, game, mode, player1, player2, password_hash)
-     VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
-    [r.name, r.game, r.mode, r.player1, r.player2, r.passwordHash],
-  )) as RunRow;
+    `INSERT INTO users (provider, provider_id, name, avatar_url)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(provider, provider_id)
+     DO UPDATE SET name = excluded.name, avatar_url = excluded.avatar_url
+     RETURNING *`,
+    [u.provider, u.providerId, u.name, u.avatarUrl],
+  )) as UserRow;
 }
 
-export async function updateRun(
+export async function getUser(id: number): Promise<UserRow | null> {
+  return (await one("SELECT * FROM users WHERE id = ?", [id])) as UserRow | null;
+}
+
+// ---- Sessions ----------------------------------------------------------
+
+export interface SessionRow {
+  id: number;
+  share_id: string;
+  name: string;
+  game: string | null;
+  mode: Mode;
+  player1: string | null;
+  player2: string | null;
+  owner_user_id: number | null;
+  created_at: string;
+  last_access_at: string;
+}
+
+export interface SessionSummary extends SessionRow {
+  run_count: number;
+}
+
+export async function listSessionsForUser(
+  userId: number,
+): Promise<SessionSummary[]> {
+  return (await all(
+    `SELECT s.*, (SELECT COUNT(*) FROM runs r WHERE r.session_id = s.id) AS run_count
+     FROM sessions s WHERE s.owner_user_id = ?
+     ORDER BY s.created_at DESC, s.id DESC`,
+    [userId],
+  )) as SessionSummary[];
+}
+
+export async function getSessionByShareId(
+  shareId: string,
+): Promise<SessionRow | null> {
+  return (await one("SELECT * FROM sessions WHERE share_id = ?", [shareId])) as
+    | SessionRow
+    | null;
+}
+
+export async function getSessionById(id: number): Promise<SessionRow | null> {
+  return (await one("SELECT * FROM sessions WHERE id = ?", [id])) as
+    | SessionRow
+    | null;
+}
+
+export async function createSession(s: {
+  name: string;
+  game: string | null;
+  mode: Mode;
+  player1: string | null;
+  player2: string | null;
+  ownerUserId: number | null;
+}): Promise<SessionRow> {
+  const shareId = crypto.randomUUID();
+  const session = (await one(
+    `INSERT INTO sessions (share_id, name, game, mode, player1, player2, owner_user_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+    [shareId, s.name, s.game, s.mode, s.player1, s.player2, s.ownerUserId],
+  )) as SessionRow;
+  await exec("INSERT INTO runs (session_id, run_number) VALUES (?, 1)", [
+    session.id,
+  ]);
+  return session;
+}
+
+export async function updateSession(
   id: number,
   fields: { name?: string; game?: string | null },
-): Promise<RunRow | null> {
+): Promise<SessionRow | null> {
   const sets: string[] = [];
   const args: any[] = [];
   if (fields.name !== undefined) {
@@ -218,78 +229,152 @@ export async function updateRun(
     sets.push("game = ?");
     args.push(fields.game);
   }
-  if (!sets.length) return getRun(id);
+  if (!sets.length) return getSessionById(id);
   args.push(id);
   return (await one(
-    `UPDATE runs SET ${sets.join(", ")} WHERE id = ? RETURNING *`,
+    `UPDATE sessions SET ${sets.join(", ")} WHERE id = ? RETURNING *`,
     args,
-  )) as RunRow | null;
+  )) as SessionRow | null;
 }
 
-export async function deleteRun(id: number): Promise<void> {
+export async function touchSession(id: number): Promise<void> {
+  await exec("UPDATE sessions SET last_access_at = datetime('now') WHERE id = ?", [
+    id,
+  ]);
+}
+
+export async function deleteSession(id: number): Promise<void> {
   await ready();
   await client().batch(
     [
       {
-        sql: "DELETE FROM encounters WHERE route_id IN (SELECT id FROM routes WHERE run_id = ?)",
+        sql: `DELETE FROM encounters WHERE route_id IN
+              (SELECT id FROM routes WHERE run_id IN
+               (SELECT id FROM runs WHERE session_id = ?))`,
         args: [id],
       },
-      { sql: "DELETE FROM level_caps WHERE run_id = ?", args: [id] },
-      { sql: "DELETE FROM routes WHERE run_id = ?", args: [id] },
-      { sql: "DELETE FROM runs WHERE id = ?", args: [id] },
+      {
+        sql: "DELETE FROM level_caps WHERE run_id IN (SELECT id FROM runs WHERE session_id = ?)",
+        args: [id],
+      },
+      {
+        sql: "DELETE FROM routes WHERE run_id IN (SELECT id FROM runs WHERE session_id = ?)",
+        args: [id],
+      },
+      { sql: "DELETE FROM runs WHERE session_id = ?", args: [id] },
+      { sql: "DELETE FROM sessions WHERE id = ?", args: [id] },
     ],
     "write",
   );
 }
 
-/** Fresh run reusing a source run's settings + routes, with empty encounters. */
-export async function cloneRun(
-  sourceId: number,
-  newName: string,
-): Promise<RunRow | null> {
-  const src = await getRun(sourceId);
-  if (!src) return null;
+/** Delete ownerless sessions untouched for `days` days. Returns count removed. */
+export async function cleanupGuestSessions(days = 30): Promise<number> {
+  const rows = await all(
+    `SELECT id FROM sessions
+     WHERE owner_user_id IS NULL AND last_access_at < datetime('now', ?)`,
+    [`-${days} days`],
+  );
+  for (const r of rows) await deleteSession(r.id as number);
+  return rows.length;
+}
+
+// ---- Runs (attempts) ---------------------------------------------------
+
+export interface RunRow {
+  id: number;
+  session_id: number;
+  run_number: number;
+  created_at: string;
+}
+
+export interface RunSummary extends RunRow {
+  routes: number;
+  caught: number;
+  boxed: number;
+  fainted: number;
+  missed: number;
+  bro_failed: number;
+}
+
+export async function listRuns(sessionId: number): Promise<RunSummary[]> {
+  return (await all(
+    `SELECT r.id, r.session_id, r.run_number, r.created_at,
+            COUNT(DISTINCT rt.id)                    AS routes,
+            COALESCE(SUM(e.status = 'caught'),0)     AS caught,
+            COALESCE(SUM(e.status = 'boxed'),0)      AS boxed,
+            COALESCE(SUM(e.status = 'fainted'),0)    AS fainted,
+            COALESCE(SUM(e.status = 'missed'),0)     AS missed,
+            COALESCE(SUM(e.status = 'bro_failed'),0) AS bro_failed
+     FROM runs r
+     LEFT JOIN routes rt ON rt.run_id = r.id
+     LEFT JOIN encounters e ON e.route_id = rt.id
+     WHERE r.session_id = ?
+     GROUP BY r.id
+     ORDER BY r.run_number`,
+    [sessionId],
+  )) as RunSummary[];
+}
+
+export async function getRunSessionId(runId: number): Promise<number | null> {
+  const r = await one("SELECT session_id FROM runs WHERE id = ?", [runId]);
+  return r ? (r.session_id as number) : null;
+}
+
+/**
+ * Start a new attempt in a session: copy the latest run's routes + level caps
+ * with empty encounters, numbered max(run_number)+1. (Like the old cloneRun.)
+ */
+export async function createNextRun(sessionId: number): Promise<RunRow | null> {
+  const session = await getSessionById(sessionId);
+  if (!session) return null;
+  const latest = await one(
+    "SELECT id, MAX(run_number) AS n FROM runs WHERE session_id = ?",
+    [sessionId],
+  );
+  const nextNumber = (latest?.n ?? 0) + 1;
+  const slots = session.mode === "soullink" ? [0, 1] : [0];
   await ready();
   const tx = await client().transaction("write");
   try {
     const run = (
       await tx.execute({
-        sql: `INSERT INTO runs (name, game, mode, player1, player2, password_hash)
-              VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
-        args: [newName, src.game, src.mode, src.player1, src.player2, src.password_hash],
+        sql: "INSERT INTO runs (session_id, run_number) VALUES (?, ?) RETURNING *",
+        args: [sessionId, nextNumber],
       })
     ).rows[0] as any as RunRow;
-    const srcRoutes = (
-      await tx.execute({
-        sql: "SELECT name, position FROM routes WHERE run_id = ? ORDER BY position, id",
-        args: [sourceId],
-      })
-    ).rows as any[];
-    const slots = src.mode === "soullink" ? [0, 1] : [0];
-    for (const rt of srcRoutes) {
-      const nr = (
+    if (latest?.id != null) {
+      const srcRoutes = (
         await tx.execute({
-          sql: "INSERT INTO routes (run_id, name, position) VALUES (?, ?, ?) RETURNING id",
-          args: [run.id, rt.name, rt.position],
+          sql: "SELECT name, position FROM routes WHERE run_id = ? ORDER BY position, id",
+          args: [latest.id],
         })
-      ).rows[0] as any;
-      for (const slot of slots)
+      ).rows as any[];
+      for (const rt of srcRoutes) {
+        const nr = (
+          await tx.execute({
+            sql: "INSERT INTO routes (run_id, name, position) VALUES (?, ?, ?) RETURNING id",
+            args: [run.id, rt.name, rt.position],
+          })
+        ).rows[0] as any;
+        for (const slot of slots)
+          await tx.execute({
+            sql: "INSERT INTO encounters (route_id, slot) VALUES (?, ?)",
+            args: [nr.id, slot],
+          });
+      }
+      const srcCaps = (
         await tx.execute({
-          sql: "INSERT INTO encounters (route_id, slot) VALUES (?, ?)",
-          args: [nr.id, slot],
+          sql: "SELECT name, level, position FROM level_caps WHERE run_id = ? ORDER BY position, id",
+          args: [latest.id],
+        })
+      ).rows as any[];
+      for (const c of srcCaps)
+        await tx.execute({
+          sql: "INSERT INTO level_caps (run_id, name, level, position) VALUES (?, ?, ?, ?)",
+          args: [run.id, c.name, c.level, c.position],
         });
     }
-    const srcCaps = (
-      await tx.execute({
-        sql: "SELECT name, level, position FROM level_caps WHERE run_id = ? ORDER BY position, id",
-        args: [sourceId],
-      })
-    ).rows as any[];
-    for (const c of srcCaps)
-      await tx.execute({
-        sql: "INSERT INTO level_caps (run_id, name, level, position) VALUES (?, ?, ?, ?)",
-        args: [run.id, c.name, c.level, c.position],
-      });
     await tx.commit();
     return run;
   } catch (err) {
@@ -346,11 +431,21 @@ export async function listRoutes(runId: number): Promise<RouteRow[]> {
   return routes.map((rt) => ({ ...rt, encounters: byRoute.get(rt.id) ?? [] }));
 }
 
+/** Slot count for a route depends on its session's mode. */
+async function runMode(runId: number): Promise<Mode> {
+  const r = await one(
+    `SELECT s.mode AS mode FROM runs rn JOIN sessions s ON s.id = rn.session_id
+     WHERE rn.id = ?`,
+    [runId],
+  );
+  return (r?.mode as Mode) ?? "normal";
+}
+
 export async function createRoute(
   runId: number,
   name: string,
 ): Promise<RouteRow> {
-  const run = await getRun(runId);
+  const mode = await runMode(runId);
   const { pos } = await one(
     "SELECT COALESCE(MAX(position), -1) + 1 AS pos FROM routes WHERE run_id = ?",
     [runId],
@@ -359,7 +454,7 @@ export async function createRoute(
     "INSERT INTO routes (run_id, name, position) VALUES (?, ?, ?) RETURNING *",
     [runId, name, pos],
   )) as Omit<RouteRow, "encounters">;
-  const slots = run?.mode === "soullink" ? [0, 1] : [0];
+  const slots = mode === "soullink" ? [0, 1] : [0];
   for (const slot of slots)
     await exec("INSERT INTO encounters (route_id, slot) VALUES (?, ?)", [
       route.id,
@@ -390,7 +485,6 @@ export async function deleteRoute(id: number): Promise<void> {
   );
 }
 
-/** Persist a new route order; `order` is route ids in the desired sequence. */
 export async function reorderRoutes(
   runId: number,
   order: number[],
@@ -411,6 +505,15 @@ export async function getRouteRunId(routeId: number): Promise<number | null> {
   return r ? (r.run_id as number) : null;
 }
 
+export async function getRouteSessionId(routeId: number): Promise<number | null> {
+  const r = await one(
+    `SELECT rn.session_id AS sid FROM routes rt
+     JOIN runs rn ON rn.id = rt.run_id WHERE rt.id = ?`,
+    [routeId],
+  );
+  return r ? (r.sid as number) : null;
+}
+
 export async function getEncounterRunId(encId: number): Promise<number | null> {
   const r = await one(
     `SELECT rt.run_id AS run_id FROM encounters e
@@ -420,8 +523,20 @@ export async function getEncounterRunId(encId: number): Promise<number | null> {
   return r ? (r.run_id as number) : null;
 }
 
+export async function getEncounterSessionId(
+  encId: number,
+): Promise<number | null> {
+  const r = await one(
+    `SELECT rn.session_id AS sid FROM encounters e
+     JOIN routes rt ON rt.id = e.route_id
+     JOIN runs rn ON rn.id = rt.run_id WHERE e.id = ?`,
+    [encId],
+  );
+  return r ? (r.sid as number) : null;
+}
+
 /**
- * Update an encounter and, in soullink runs, propagate to the partner slot:
+ * Update an encounter and, in soullink sessions, propagate to the partner slot:
  *   fainted | missed -> partner becomes 'bro_failed'; boxed -> partner 'boxed'.
  */
 export async function updateEncounter(
@@ -465,16 +580,17 @@ export async function updateEncounter(
   let partner: EncounterRow | null = null;
   if ("status" in fields) {
     const ctx = await one(
-      `SELECT r.mode AS mode FROM encounters e
+      `SELECT s.mode AS mode FROM encounters e
        JOIN routes rt ON rt.id = e.route_id
-       JOIN runs r ON r.id = rt.run_id WHERE e.id = ?`,
+       JOIN runs rn ON rn.id = rt.run_id
+       JOIN sessions s ON s.id = rn.session_id WHERE e.id = ?`,
       [id],
     );
     if (ctx?.mode === "soullink") {
-      const s = fields.status;
+      const st = fields.status;
       let partnerStatus: Status | null = null;
-      if (s === "fainted" || s === "missed") partnerStatus = "bro_failed";
-      else if (s === "boxed") partnerStatus = "boxed";
+      if (st === "fainted" || st === "missed") partnerStatus = "bro_failed";
+      else if (st === "boxed") partnerStatus = "boxed";
       if (partnerStatus)
         partner = (await one(
           "UPDATE encounters SET status = ? WHERE route_id = ? AND slot = ? RETURNING *",
@@ -549,4 +665,15 @@ export async function deleteLevelCap(id: number): Promise<void> {
 export async function getLevelCapRunId(id: number): Promise<number | null> {
   const r = await one("SELECT run_id FROM level_caps WHERE id = ?", [id]);
   return r ? (r.run_id as number) : null;
+}
+
+export async function getLevelCapSessionId(
+  id: number,
+): Promise<number | null> {
+  const r = await one(
+    `SELECT rn.session_id AS sid FROM level_caps lc
+     JOIN runs rn ON rn.id = lc.run_id WHERE lc.id = ?`,
+    [id],
+  );
+  return r ? (r.sid as number) : null;
 }

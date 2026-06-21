@@ -1,10 +1,16 @@
 # Custom Nuzlocke Tracker
 
-A web app to track a custom Pokémon Nuzlocke — solo or as a two-player **Soullink** — with live sync between both players. Create multiple **runs**, add **routes**, and record the **encounter(s)** on each route: Pokémon (name + sprite from [PokeAPI](https://pokeapi.co/)), a **nickname**, and a **status**.
+A web app to track a custom Pokémon Nuzlocke — solo or as a two-player **Soullink** — with live sync between both players. A **session** holds **routes** and one or more **runs (attempts)**; each run records the **encounter(s)** on each route: Pokémon (name + sprite from [PokeAPI](https://pokeapi.co/)), a **nickname**, and a **status**.
+
+## Access model
+
+- **Log in with Discord** to own sessions — your list of sessions is private to you.
+- Or open a session via its **share link** (`/s/<share-id>`): anyone with the link can view *and* edit it (collaborative, e.g. a Soullink partner).
+- **Guests** (not logged in) can create sessions too; they're reachable only by their share link and are auto-deleted after 30 days without access.
 
 ## Stack
 
-Bun + `bun:sqlite` + `Bun.serve` (HTTP + WebSocket), with a dependency-free vanilla-JS SPA in `public/`.
+Bun + `@libsql/client` + `Bun.serve` (HTTP + WebSocket), with a dependency-free vanilla-JS SPA in `public/`. Login is Discord OAuth via a stateless signed cookie.
 
 ## Run
 
@@ -15,16 +21,17 @@ bun run dev      # watch mode
 bun run start
 ```
 
-The server binds `0.0.0.0`, so it's reachable on your LAN. Open <http://localhost:3001> yourself, and share `http://<your-LAN-ip>:3001` with your Soullink partner (the startup log prints the hint).
+The server binds `0.0.0.0` and serves three pages: `/login`, `/sessions` (your sessions), and `/s/<share-id>` (a full-page session view). Discord login needs env vars (below); guest sessions work without them.
 
 ## Features
 
-- **Runs** — flat list in the sidebar. Create / switch / delete. The last opened run reopens on reload. Sidebar shows a 🔗 (soullink) or 🔒 (protected) badge.
-- **Routes** — free-text names you add as you play (e.g. `Route 1`, `Viridian Forest`).
-- **Encounters** — pick a Pokémon (sprite-thumbnail dropdown backed by the full PokéAPI list, cached in `localStorage`), give it a **nickname**, set a **status** (`Caught` / `Boxed` / `Fainted` / `Missed`; defaults to *Caught* on capture). Per encounter: an **ℹ️ info** modal (base stat total + ability effects) and a **🧬 evolve** button (walks the PokéAPI evolution chain).
-- **Soullink mode** — two encounters per route, one per player (names configurable). Status is linked: if one side **faints** or is **missed**, the partner's becomes **"Bro failed"**; if one is **boxed**, the partner is boxed too; *caught* stays independent.
-- **Live sync** — both players connect over WebSocket; any change (encounter, route, status) appears for the other instantly. A green dot in the run header shows the connection is live.
-- **Password protection** — optionally protect a run with a password; it's then required to open *and* edit. The session list shows a 🔒 until unlocked. Passwords are hashed (`Bun.password`); access is granted via in-memory tokens.
+- **Sessions & runs** — a session holds the routes; within it you keep multiple **runs (attempts)**, switched with a run-number select. **"+ New run"** copies the current routes + level caps with **empty encounters** and stays on the page.
+- **Routes** — free-text names you add as you play (e.g. `Route 1`, `Viridian Forest`); drag the grip handle to reorder.
+- **Encounters** — pick a Pokémon (sprite-thumbnail dropdown backed by the full PokéAPI list, cached in `localStorage`), give it a **nickname**, set a **status** (`Alive` / `Boxed` / `Fainted` / `Missed`; defaults to *Alive* on capture). Per encounter: an **ℹ️ info** modal (base stat total + ability effects) and a **🧬 evolve** button.
+- **Soullink mode** — two encounters per route, one per player. Status is linked: if one side **faints** or is **missed**, the partner's becomes **"Bro failed"**; if one is **boxed**, the partner is boxed too; *alive* stays independent.
+- **Level caps**, a per-generation **type chart**, and a **type-matchup** calculator (rom-hack typings supported).
+- **Live sync** — everyone viewing a session connects over WebSocket; any change appears for the others instantly (green dot = connected).
+- **Dupes clause** — warns if a Pokémon's evolution line is already an encounter elsewhere in the run.
 - Sprites and names are stored in the DB, so saved runs render even if PokeAPI is offline later.
 
 ## Data
@@ -34,7 +41,7 @@ Uses **libSQL** (`@libsql/client`) — SQLite-compatible. Two modes, chosen by e
 - **Local (default):** a SQLite file at `data/nuzlocke.db` (override with `NUZLOCKE_DB`).
 - **Hosted:** set `TURSO_DATABASE_URL` (and `TURSO_AUTH_TOKEN`) to use a [Turso](https://turso.tech) database — durable and free, ideal for hosts with ephemeral disks like Render.
 
-Schema: `runs` → `routes` → `encounters` (one per slot; soullink uses slots 0 and 1) + `level_caps`. Deleting a run removes its routes, encounters, and caps. The DB auto-creates its tables and migrates older single-encounter data on first run.
+Schema: `users` own `sessions`; a session has `runs` (attempts); each run has `routes` → `encounters` (one per slot; soullink uses slots 0 and 1) + `level_caps`. Tables auto-create on first run. Ownerless (guest) sessions are pruned after 30 days without access.
 
 ## Deploy on Render
 
@@ -57,9 +64,19 @@ turso db tokens create nuzlocke     # -> TURSO_AUTH_TOKEN
 | Start Command | `bun run start` |
 | Runtime | **Bun** if offered, else **Node** (the committed `bun.lock` makes Render install Bun) |
 
-Then add the two environment variables `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. (Render injects `PORT`; don't set it.) The app creates its tables automatically on first request.
+Then add `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. (Render injects `PORT`; don't set it.) The app creates its tables automatically.
 
-**One-click blueprint.** `render.yaml` encodes the service + env vars (it prompts for the two Turso secrets). On Render: **New → Blueprint**, select the repo; edit `region` first if needed.
+**3. Set up Discord login.** At <https://discord.com/developers/applications> create an app, and under **OAuth2** add a redirect URL `https://<your-render-url>/auth/discord/callback` (and `http://localhost:3001/auth/discord/callback` for local dev). Then set env vars:
+
+| Var | Value |
+|---|---|
+| `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | from the Discord app's OAuth2 page |
+| `SESSION_SECRET` | any long random string (signs login cookies) |
+| `DISCORD_REDIRECT_URI` | *optional* — only if the auto-derived callback URL is wrong (e.g. behind extra proxies) |
+
+Guests can use the app without Discord configured; only the "Log in with Discord" button needs these.
+
+**One-click blueprint.** `render.yaml` encodes the service + all of the above (it prompts for the secrets and generates `SESSION_SECRET`). On Render: **New → Blueprint**, select the repo; edit `region` first if needed.
 
 **Docker (alternative).** Set the runtime to **Docker** to run on the official `oven/bun` image (`Dockerfile` included); pass the same two Turso env vars.
 
