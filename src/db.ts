@@ -390,6 +390,22 @@ export async function deleteRoute(id: number): Promise<void> {
   );
 }
 
+/** Persist a new route order; `order` is route ids in the desired sequence. */
+export async function reorderRoutes(
+  runId: number,
+  order: number[],
+): Promise<void> {
+  if (!order.length) return;
+  await ready();
+  await client().batch(
+    order.map((id, i) => ({
+      sql: "UPDATE routes SET position = ? WHERE id = ? AND run_id = ?",
+      args: [i, id, runId],
+    })),
+    "write",
+  );
+}
+
 export async function getRouteRunId(routeId: number): Promise<number | null> {
   const r = await one("SELECT run_id FROM routes WHERE id = ?", [routeId]);
   return r ? (r.run_id as number) : null;

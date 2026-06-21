@@ -669,6 +669,7 @@ function renderRoutes(run) {
     const cards = el("div", "cards");
     for (const route of routes) cards.appendChild(buildSoullinkCard(route, run));
     routesArea.appendChild(cards);
+    enableDrag(cards, ".route-card");
   } else {
     const wrap = el("div", "table-wrap");
     const table = el("table", "routes-table");
@@ -681,8 +682,79 @@ function renderRoutes(run) {
     table.appendChild(tbody);
     wrap.appendChild(table);
     routesArea.appendChild(wrap);
+    enableDrag(tbody, "tr");
   }
   recomputeDupes();
+}
+
+// ---- Drag-to-reorder ----
+let dragEl = null;
+
+/** A grip handle that drags its row/card to reorder. */
+function dragHandle() {
+  const h = el("span", "drag-handle");
+  h.textContent = "⠿";
+  h.title = "Drag to reorder";
+  h.draggable = true;
+  h.addEventListener("dragstart", (e) => {
+    dragEl = h.closest("[data-route-id]");
+    if (!dragEl) return;
+    dragEl.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", dragEl.dataset.routeId);
+    try {
+      e.dataTransfer.setDragImage(dragEl, 12, 12);
+    } catch {
+      /* ignore */
+    }
+  });
+  h.addEventListener("dragend", () => {
+    if (dragEl) dragEl.classList.remove("dragging");
+    dragEl = null;
+    persistOrder();
+  });
+  return h;
+}
+
+function enableDrag(container, itemSelector) {
+  container.addEventListener("dragover", (e) => {
+    if (!dragEl || !container.contains(dragEl)) return;
+    e.preventDefault();
+    const after = dragAfter(container, itemSelector, e.clientY);
+    if (after == null) container.appendChild(dragEl);
+    else if (after !== dragEl) container.insertBefore(dragEl, after);
+  });
+}
+
+function dragAfter(container, itemSelector, y) {
+  const items = [...container.querySelectorAll(`${itemSelector}:not(.dragging)`)];
+  let closest = { offset: -Infinity, el: null };
+  for (const child of items) {
+    const box = child.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) closest = { offset, el: child };
+  }
+  return closest.el;
+}
+
+/** Push the current DOM order to the server (and update local state). */
+async function persistOrder() {
+  const ids = [...routesArea.querySelectorAll("[data-route-id]")].map((node) =>
+    Number(node.dataset.routeId),
+  );
+  if (!ids.length) return;
+  const order = new Map(ids.map((id, i) => [id, i]));
+  routes.sort((a, b) => order.get(a.id) - order.get(b.id));
+  try {
+    await api(`/api/runs/${activeRunId}/reorder`, {
+      method: "PUT",
+      body: JSON.stringify({ order: ids }),
+      headers: runHeaders(),
+    });
+  } catch (err) {
+    toast(err.message);
+    loadRoutesData(); // revert to server order on failure
+  }
 }
 
 function rerenderRoute(routeId) {
@@ -705,7 +777,10 @@ function buildNormalRow(route, run) {
   if (enc?.status) tr.dataset.status = enc.status;
 
   const nameTd = el("td", "route-name-cell");
-  nameTd.appendChild(routeNameInput(route));
+  const nameWrap = el("div", "route-name-wrap");
+  if (runEditable) nameWrap.appendChild(dragHandle());
+  nameWrap.appendChild(routeNameInput(route));
+  nameTd.appendChild(nameWrap);
 
   const spriteTd = el("td", "col-sprite");
   const box = el("div", "sprite-box");
@@ -734,6 +809,7 @@ function buildSoullinkCard(route, run) {
   card.dataset.routeId = route.id;
 
   const head = el("div", "card-head");
+  if (runEditable) head.appendChild(dragHandle());
   head.appendChild(routeNameInput(route));
   head.appendChild(deleteRouteBtn(route));
   card.appendChild(head);

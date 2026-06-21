@@ -16,6 +16,7 @@ import {
   createRoute,
   updateRouteName,
   deleteRoute,
+  reorderRoutes,
   getRouteRunId,
   getEncounterRunId,
   updateEncounter,
@@ -245,6 +246,21 @@ async function handleApi(req: Request, url: URL): Promise<Response> {
     }
     await deleteLevelCap(id);
     if (runId) broadcastCaps(runId);
+    return json({ ok: true });
+  }
+
+  // --- Reorder a run's routes ---
+  if (path.startsWith("/api/runs/") && path.endsWith("/reorder") && method === "PUT") {
+    const id = idFromPath("/api/runs/");
+    const run = await getRun(id);
+    const denied = authGuard(run, token);
+    if (denied) return denied;
+    const b = await body();
+    const order = Array.isArray(b.order)
+      ? b.order.filter((x): x is number => typeof x === "number")
+      : [];
+    await reorderRoutes(id, order);
+    broadcastRoutes(id);
     return json({ ok: true });
   }
 

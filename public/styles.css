@@ -279,6 +279,38 @@ select:disabled {
   transition: opacity 0.12s;
 }
 
+/* ---- Drag-to-reorder ---- */
+.route-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.route-name-wrap .route-name {
+  flex: 1;
+}
+.drag-handle {
+  cursor: grab;
+  color: var(--muted);
+  user-select: none;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 2px 2px;
+  flex-shrink: 0;
+}
+.drag-handle:hover {
+  color: var(--text);
+}
+.drag-handle:active {
+  cursor: grabbing;
+}
+tr.dragging,
+.route-card.dragging {
+  opacity: 0.4;
+}
+.route-card.dragging {
+  outline: 2px dashed var(--accent);
+}
+
 .route-name-cell input,
 .pokemon-cell input,
 .nick-cell input {
