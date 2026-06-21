@@ -269,7 +269,7 @@ export async function deleteSession(id: number): Promise<void> {
 }
 
 /** Delete ownerless sessions untouched for `days` days. Returns count removed. */
-export async function cleanupGuestSessions(days = 30): Promise<number> {
+export async function cleanupGuestSessions(days = 365): Promise<number> {
   const rows = await all(
     `SELECT id FROM sessions
      WHERE owner_user_id IS NULL AND last_access_at < datetime('now', ?)`,

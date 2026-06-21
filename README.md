@@ -6,7 +6,7 @@ A web app to track a custom Pokémon Nuzlocke — solo or as a two-player **Soul
 
 - **Log in with Discord** to own sessions — your list of sessions is private to you.
 - Or open a session via its **share link** (`/s/<share-id>`): anyone with the link can view *and* edit it (collaborative, e.g. a Soullink partner).
-- **Guests** (not logged in) can create sessions too; they're reachable only by their share link and are auto-deleted after 30 days without access.
+- **Guests** (not logged in) can create sessions too; they're reachable only by their share link and are auto-deleted after a year without access.
 
 ## Stack
 
@@ -41,7 +41,7 @@ Uses **libSQL** (`@libsql/client`) — SQLite-compatible. Two modes, chosen by e
 - **Local (default):** a SQLite file at `data/nuzlocke.db` (override with `NUZLOCKE_DB`).
 - **Hosted:** set `TURSO_DATABASE_URL` (and `TURSO_AUTH_TOKEN`) to use a [Turso](https://turso.tech) database — durable and free, ideal for hosts with ephemeral disks like Render.
 
-Schema: `users` own `sessions`; a session has `runs` (attempts); each run has `routes` → `encounters` (one per slot; soullink uses slots 0 and 1) + `level_caps`. Tables auto-create on first run. Ownerless (guest) sessions are pruned after 30 days without access.
+Schema: `users` own `sessions`; a session has `runs` (attempts); each run has `routes` → `encounters` (one per slot; soullink uses slots 0 and 1) + `level_caps`. Tables auto-create on first run. Ownerless (guest) sessions are pruned after a year without access.
 
 ## Deploy on Render
 
