@@ -574,6 +574,22 @@ tr[data-status="missed"],
   right: 12px;
 }
 
+/* Confirm dialog (designed replacement for window.confirm) */
+.confirm h3 {
+  margin: 0 0 10px;
+  padding-right: 28px;
+}
+.confirm-msg {
+  margin: 0 0 22px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .info-head {
   display: flex;
   align-items: center;

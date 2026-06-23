@@ -1,7 +1,7 @@
 // Nuzlocke Tracker — entry point.
 // Wires the static DOM controls (they exist from page load), starts the live
 // socket, and boots the router. Feature logic lives in the sibling modules.
-import { $, toast } from "./dom.js";
+import { $, toast, confirmModal } from "./dom.js";
 import { api } from "./api.js";
 import { state, runHeaders } from "./state.js";
 import { loadPokedex } from "./pokedex.js";
@@ -51,12 +51,12 @@ $("#attempt-select").addEventListener("change", async (e) => {
 });
 
 $("#new-run-btn").addEventListener("click", async () => {
-  if (
-    !confirm(
-      "Start a new run? Routes and level caps are copied; encounters start empty.",
-    )
-  )
-    return;
+  const ok = await confirmModal({
+    title: "Start a new run?",
+    message: "Routes and level caps are copied; encounters start empty.",
+    confirmLabel: "Start run",
+  });
+  if (!ok) return;
   try {
     const run = await api(`/api/sessions/${state.shareId}/runs`, {
       method: "POST",
@@ -85,8 +85,13 @@ $("#share-btn").addEventListener("click", async () => {
 
 $("#delete-session-btn").addEventListener("click", async () => {
   if (!state.session) return;
-  if (!confirm(`Delete "${state.session.name}" and all its runs? This cannot be undone.`))
-    return;
+  const ok = await confirmModal({
+    title: "Delete this session?",
+    message: `"${state.session.name}" and all its runs will be permanently deleted. This can't be undone.`,
+    confirmLabel: "Delete",
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api(`/api/sessions/${state.shareId}`, {
       method: "DELETE",

@@ -55,15 +55,20 @@ export function renderSprite(box, url) {
 }
 
 // ---- Modal ----
+let onCloseCb = null;
 function escClose(e) {
   if (e.key === "Escape") closeModal();
 }
 export function closeModal() {
   document.querySelector(".modal-overlay")?.remove();
   document.removeEventListener("keydown", escClose);
+  const cb = onCloseCb;
+  onCloseCb = null;
+  if (cb) cb(); // fires for every dismissal path (X, overlay, Escape)
 }
-export function openModal(contentNode) {
+export function openModal(contentNode, { onClose } = {}) {
   closeModal();
+  onCloseCb = onClose || null;
   const overlay = el("div", "modal-overlay");
   const modal = el("div", "modal");
   const close = iconBtn("✕", "Close", "del");
@@ -77,4 +82,46 @@ export function openModal(contentNode) {
   document.body.appendChild(overlay);
   document.addEventListener("keydown", escClose);
   return modal;
+}
+
+/** Designed replacement for window.confirm(); resolves true (confirmed) or
+ *  false (cancelled / dismissed any other way). */
+export function confirmModal({
+  title,
+  message,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  danger = false,
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      resolve(val);
+    };
+
+    const content = el("div", "confirm");
+    const h = el("h3");
+    h.textContent = title;
+    const p = el("p", "confirm-msg");
+    p.textContent = message;
+    const actions = el("div", "confirm-actions");
+    const cancel = el("button", "btn");
+    cancel.type = "button";
+    cancel.textContent = cancelLabel;
+    const ok = el("button", "btn " + (danger ? "danger" : "primary"));
+    ok.type = "button";
+    ok.textContent = confirmLabel;
+    actions.append(cancel, ok);
+    content.append(h, p, actions);
+
+    cancel.addEventListener("click", closeModal); // → onClose → finish(false)
+    ok.addEventListener("click", () => {
+      finish(true);
+      closeModal();
+    });
+    openModal(content, { onClose: () => finish(false) });
+    ok.focus();
+  });
 }

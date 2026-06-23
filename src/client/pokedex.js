@@ -138,6 +138,19 @@ export async function getEvolutions(detail) {
   return opts;
 }
 
+/** Whether this Pokémon has at least one further evolution. Cached via the
+ *  detail/evolution caches above. On lookup failure, returns true (leave the
+ *  evolve button usable rather than wrongly disabling it). */
+export async function hasEvolution(pokemonId) {
+  try {
+    const detail = await getPokemonDetail(pokemonId);
+    const opts = await getEvolutions(detail);
+    return opts.length > 0;
+  } catch {
+    return true;
+  }
+}
+
 const familyCache = new Map(); // pokemonId -> evolution-chain id (family key)
 
 export async function getFamilyKey(pokemonId) {

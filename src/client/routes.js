@@ -15,6 +15,7 @@ import {
   spriteUrl,
   resolvePokemon,
   filterPokedex,
+  hasEvolution,
 } from "./pokedex.js";
 import { closeAllCombos, positionCombo } from "./combo.js";
 import { recomputeDupes, applyDupeBadges, playerLabel, getDupe } from "./dupes.js";
@@ -290,6 +291,15 @@ function encActions(enc) {
   const evolveBtn = iconBtn("🧬", "Evolve");
   evolveBtn.disabled = !has;
   evolveBtn.addEventListener("click", () => evolve(enc));
+  // No evolution data on hand at render time — check async and disable if the
+  // Pokémon has nothing further to evolve into.
+  if (has)
+    hasEvolution(enc.pokemon_id).then((can) => {
+      if (!can) {
+        evolveBtn.disabled = true;
+        evolveBtn.title = "No further evolution";
+      }
+    });
   return [infoBtn, evolveBtn];
 }
 
