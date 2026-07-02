@@ -1,6 +1,6 @@
 // Type matchup calculator: pick a Pokémon (or two types) → effectiveness chips.
 import { $, el, capitalize } from "./dom.js";
-import { TYPE_NAMES, TYPE_COLORS, MULT_LABEL } from "./constants.js";
+import { TYPE_NAMES, TYPE_COLORS, MULT_LABEL, GEN_LABELS } from "./constants.js";
 import { input } from "./dom.js";
 import { spriteUrl, filterPokedex, getPokemonDetail } from "./pokedex.js";
 import { closeAllCombos, positionCombo } from "./combo.js";
@@ -133,9 +133,18 @@ function colorTypeSelect(sel) {
 export function setupMatchup() {
   const details = $("#matchup-section");
   const host = $("#matchup-picker");
+  const gen = $("#mu-gen-select");
   const t1 = $("#mu-type1");
   const t2 = $("#mu-type2");
   const result = $("#matchup-result");
+
+  for (let g = 1; g <= 9; g++) {
+    const o = el("option");
+    o.value = String(g);
+    o.textContent = `Gen ${GEN_LABELS[g - 1]}`;
+    gen.appendChild(o);
+  }
+  gen.value = "9";
 
   const typeOption = (value, label) => {
     const o = el("option");
@@ -145,30 +154,51 @@ export function setupMatchup() {
     o.style.backgroundColor = "var(--panel-2)";
     return o;
   };
-  for (const t of TYPE_NAMES) t1.appendChild(typeOption(t, capitalize(t)));
-  t2.appendChild(typeOption("", "(none)"));
-  for (const t of TYPE_NAMES) t2.appendChild(typeOption(t, capitalize(t)));
-  t1.value = "normal";
-  t2.value = "";
-  colorTypeSelect(t1);
-  colorTypeSelect(t2);
 
-  let chart = null;
+  // Fill the type selects with the types that exist in the chosen generation,
+  // keeping the current pick when it's still valid there.
+  const fillTypeSelects = (types) => {
+    const prev1 = t1.value;
+    const prev2 = t2.value;
+    t1.innerHTML = "";
+    t2.innerHTML = "";
+    for (const t of types) t1.appendChild(typeOption(t, capitalize(t)));
+    t2.appendChild(typeOption("", "(none)"));
+    for (const t of types) t2.appendChild(typeOption(t, capitalize(t)));
+    t1.value = types.includes(prev1) ? prev1 : types[0];
+    t2.value = types.includes(prev2) ? prev2 : "";
+    colorTypeSelect(t1);
+    colorTypeSelect(t2);
+  };
+  fillTypeSelects(TYPE_NAMES); // Gen IX default → all 18 types
+
+  let loaded = false;
+  const ensureLoaded = async () => {
+    if (loaded) return true;
+    result.innerHTML = `<p class="muted">Loading type data…</p>`;
+    try {
+      await loadTypeInfos();
+      loaded = true;
+      return true;
+    } catch {
+      result.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
+      return false;
+    }
+  };
+
   const render = async () => {
+    if (!(await ensureLoaded())) return;
     colorTypeSelect(t1);
     colorTypeSelect(t2);
     if (!t1.value) return;
-    if (!chart) {
-      result.innerHTML = `<p class="muted">Loading type data…</p>`;
-      try {
-        await loadTypeInfos();
-        chart = buildTypeChart(9).chart;
-      } catch {
-        result.innerHTML = `<p>Couldn't load type data from PokeAPI.</p>`;
-        return;
-      }
-    }
+    const { chart } = buildTypeChart(Number(gen.value));
     renderMatchup(result, chart, t1.value, t2.value);
+  };
+
+  const onGenChange = async () => {
+    if (!(await ensureLoaded())) return;
+    fillTypeSelects(buildTypeChart(Number(gen.value)).types);
+    render();
   };
 
   host.appendChild(
@@ -184,6 +214,7 @@ export function setupMatchup() {
     }),
   );
 
+  gen.addEventListener("change", onGenChange);
   t1.addEventListener("change", render);
   t2.addEventListener("change", render);
   details.addEventListener("toggle", () => {

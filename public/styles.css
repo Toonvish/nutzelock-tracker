@@ -920,6 +920,16 @@ tr[data-status="missed"],
   letter-spacing: 0.05em;
   color: var(--muted);
   user-select: none;
+  /* Bleed over the .caps padding so the whole header bar is the hit target,
+     not just the text. */
+  margin: -10px -14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  transition: background-color 0.15s var(--ease), color 0.15s var(--ease);
+}
+.caps > summary:hover {
+  background: var(--panel-2);
+  color: var(--text);
 }
 /* Breathing room between the title and the content when expanded. */
 .caps[open] > summary {
@@ -1166,6 +1176,17 @@ tr[data-status="missed"],
 .matchup-controls select {
   min-width: 120px;
 }
+.mu-gen {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+.mu-gen select {
+  min-width: 84px;
+}
 .matchup-result {
   margin-top: 20px;
 }
@@ -1409,7 +1430,7 @@ tr[data-status="missed"],
 .caps > summary {
   list-style: none;
   position: relative;
-  padding-left: 20px;
+  padding-left: 34px;
 }
 .caps > summary::-webkit-details-marker {
   display: none;
@@ -1417,7 +1438,7 @@ tr[data-status="missed"],
 .caps > summary::before {
   content: "▸";
   position: absolute;
-  left: 3px;
+  left: 17px;
   color: var(--muted);
   transition: transform 0.2s var(--ease);
 }
