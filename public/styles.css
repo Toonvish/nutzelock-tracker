@@ -1197,6 +1197,38 @@ tr[data-status="missed"],
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
 }
 
+/* ---- Ability lookup ---- */
+.ability-controls #ability-picker {
+  max-width: 320px;
+}
+.ability-controls #ability-picker .combo input {
+  width: 100%;
+}
+.ability-result {
+  margin-top: 18px;
+}
+.ability-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.ability-title {
+  margin: 0;
+}
+.ability-gen {
+  font-size: 0.78rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.ability-desc {
+  margin: 0;
+  line-height: 1.55;
+  color: var(--text);
+  max-width: 68ch;
+}
+
 /* ===== Pages (login / sessions / session) ===== */
 #app {
   display: block; /* override the old sidebar flex layout (sidebar removed) */
