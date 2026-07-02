@@ -2,7 +2,8 @@
 // from our own cached /api/typechart endpoint (one request, not 18 to PokeAPI).
 import { $, el, capitalize } from "./dom.js";
 import { api } from "./api.js";
-import { GEN_ORDER, GEN_LABELS, TYPE_COLORS } from "./constants.js";
+import { GEN_ORDER, TYPE_COLORS } from "./constants.js";
+import { getGen, onGenChange } from "./gen.js";
 
 const MULT_TEXT = { 2: "2×", 1: "1×", 0.5: "½×", 0: "0×" };
 const MULT_CLASS = { 2: "eff-super", 1: "eff-normal", 0.5: "eff-weak", 0: "eff-none" };
@@ -119,18 +120,10 @@ function enableTypeHover(table) {
 
 export function setupTypeChart() {
   const details = $("#type-chart-section");
-  const sel = $("#type-gen-select");
   const grid = $("#type-grid");
-  for (let g = 1; g <= 9; g++) {
-    const o = el("option");
-    o.value = String(g);
-    o.textContent = `Gen ${GEN_LABELS[g - 1]}`;
-    sel.appendChild(o);
-  }
-  sel.value = "9";
 
   let loaded = false;
-  const draw = () => renderTypeGrid(grid, Number(sel.value));
+  const draw = () => renderTypeGrid(grid, getGen());
   const ensure = async () => {
     if (loaded) return draw();
     grid.innerHTML = `<p class="muted">Loading type data…</p>`;
@@ -145,7 +138,7 @@ export function setupTypeChart() {
   details.addEventListener("toggle", () => {
     if (details.open) ensure();
   });
-  sel.addEventListener("change", () => {
+  onGenChange(() => {
     if (loaded) draw();
   });
 }

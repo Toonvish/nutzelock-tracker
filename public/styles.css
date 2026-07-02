@@ -1022,15 +1022,6 @@ tr[data-status="missed"],
 .modal-wide {
   width: min(980px, 95vw);
 }
-.tc-controls {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  margin-bottom: 6px;
-}
-.tc-controls h3 {
-  margin: 0;
-}
 .tc-note {
   margin: 0 0 14px;
   font-size: 0.85rem;
@@ -1175,17 +1166,6 @@ tr[data-status="missed"],
 }
 .matchup-controls select {
   min-width: 120px;
-}
-.mu-gen {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 0.9rem;
-  white-space: nowrap;
-}
-.mu-gen select {
-  min-width: 84px;
 }
 .matchup-result {
   margin-top: 20px;
@@ -1346,7 +1326,8 @@ tr[data-status="missed"],
 .back-link:hover {
   color: var(--text);
 }
-.attempt-switch {
+.attempt-switch,
+.gen-switch {
   display: flex;
   align-items: center;
   gap: 6px;

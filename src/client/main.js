@@ -9,6 +9,7 @@ import { loadRoutesData, renderRoutes } from "./routes.js";
 import { loadCaps, renderCaps } from "./levelcaps.js";
 import { setupTypeChart } from "./typechart.js";
 import { setupMatchup } from "./matchup.js";
+import { setupGenSelect } from "./gen.js";
 import {
   route,
   nav,
@@ -148,6 +149,7 @@ $("#add-route-form").addEventListener("submit", async (e) => {
   }
 });
 
+setupGenSelect();
 setupTypeChart();
 setupMatchup();
 

@@ -1,10 +1,11 @@
 // Type matchup calculator: pick a Pokémon (or two types) → effectiveness chips.
 import { $, el, capitalize } from "./dom.js";
-import { TYPE_NAMES, TYPE_COLORS, MULT_LABEL, GEN_LABELS } from "./constants.js";
+import { TYPE_NAMES, TYPE_COLORS, MULT_LABEL } from "./constants.js";
 import { input } from "./dom.js";
 import { spriteUrl, filterPokedex, getPokemonDetail } from "./pokedex.js";
 import { closeAllCombos, positionCombo } from "./combo.js";
 import { loadTypeInfos, buildTypeChart } from "./typechart.js";
+import { getGen, onGenChange } from "./gen.js";
 
 function buildMatchupPicker(onPick) {
   const wrap = el("div", "combo");
@@ -133,18 +134,9 @@ function colorTypeSelect(sel) {
 export function setupMatchup() {
   const details = $("#matchup-section");
   const host = $("#matchup-picker");
-  const gen = $("#mu-gen-select");
   const t1 = $("#mu-type1");
   const t2 = $("#mu-type2");
   const result = $("#matchup-result");
-
-  for (let g = 1; g <= 9; g++) {
-    const o = el("option");
-    o.value = String(g);
-    o.textContent = `Gen ${GEN_LABELS[g - 1]}`;
-    gen.appendChild(o);
-  }
-  gen.value = "9";
 
   const typeOption = (value, label) => {
     const o = el("option");
@@ -170,7 +162,7 @@ export function setupMatchup() {
     colorTypeSelect(t1);
     colorTypeSelect(t2);
   };
-  fillTypeSelects(TYPE_NAMES); // Gen IX default → all 18 types
+  fillTypeSelects(TYPE_NAMES); // before load: all 18 types (Gen IX default)
 
   let loaded = false;
   const ensureLoaded = async () => {
@@ -186,19 +178,16 @@ export function setupMatchup() {
     }
   };
 
-  const render = async () => {
+  // Sync the type selects to the current generation (equal type count ⇒ same
+  // type set, so length is a safe "needs refill" check), then render.
+  const refresh = async () => {
     if (!(await ensureLoaded())) return;
+    const { types, chart } = buildTypeChart(getGen());
+    if (t1.options.length !== types.length) fillTypeSelects(types);
     colorTypeSelect(t1);
     colorTypeSelect(t2);
     if (!t1.value) return;
-    const { chart } = buildTypeChart(Number(gen.value));
     renderMatchup(result, chart, t1.value, t2.value);
-  };
-
-  const onGenChange = async () => {
-    if (!(await ensureLoaded())) return;
-    fillTypeSelects(buildTypeChart(Number(gen.value)).types);
-    render();
   };
 
   host.appendChild(
@@ -210,14 +199,14 @@ export function setupMatchup() {
       } catch {
         /* keep current */
       }
-      render();
+      refresh();
     }),
   );
 
-  gen.addEventListener("change", onGenChange);
-  t1.addEventListener("change", render);
-  t2.addEventListener("change", render);
+  t1.addEventListener("change", refresh);
+  t2.addEventListener("change", refresh);
+  onGenChange(refresh);
   details.addEventListener("toggle", () => {
-    if (details.open) render();
+    if (details.open) refresh();
   });
 }

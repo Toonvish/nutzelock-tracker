@@ -49,6 +49,9 @@
             <label class="attempt-switch"
               >Run <select id="attempt-select"></select
             ></label>
+            <label class="gen-switch" title="Generation for the type chart & matchup"
+              >Gen <select id="gen-select"></select
+            ></label>
             <button id="new-run-btn" class="btn">+ New run</button>
             <button id="share-btn" class="btn">Share link</button>
             <button id="delete-session-btn" class="btn danger">Delete</button>
@@ -73,9 +76,6 @@
 
           <details id="type-chart-section" class="caps">
             <summary>⚡ Type chart</summary>
-            <div class="tc-controls">
-              <label>Generation <select id="type-gen-select"></select></label>
-            </div>
             <div id="type-grid" class="tc-grid"></div>
             <div class="tc-legend">
               <span class="tc-leg"><i class="tc-sw eff-super"></i>Super effective (2×)</span>
@@ -89,7 +89,6 @@
             <summary>⚔️ Type matchup</summary>
             <div class="matchup-controls">
               <div id="matchup-picker"></div>
-              <label class="mu-gen">Gen <select id="mu-gen-select"></select></label>
               <select id="mu-type1" title="Primary type"></select>
               <select id="mu-type2" title="Secondary type (or none)"></select>
             </div>
